@@ -21,6 +21,7 @@ from app.disease.model import (
     TorchTomatoDiseasePredictor,
     _decode_image_base64,
     _load_state_dict_strict,
+    _load_torch_artifact_safely,
     _validate_runtime_artifacts,
 )
 
@@ -93,6 +94,42 @@ def _valid_pt_metadata() -> dict[str, object]:
     }
 
 
+class FakeTorchVersion:
+    pass
+
+
+def _install_fake_torch_version(monkeypatch: pytest.MonkeyPatch) -> type:
+    torch_version = types.ModuleType("torch.torch_version")
+    torch_version.TorchVersion = FakeTorchVersion
+    monkeypatch.setitem(sys.modules, "torch.torch_version", torch_version)
+    return FakeTorchVersion
+
+
+def _attach_fake_safe_globals(
+    fake_torch: types.ModuleType,
+    *,
+    events: list[str] | None = None,
+    allowlisted: list[list[object]] | None = None,
+) -> None:
+    class FakeSafeGlobals:
+        def __init__(self, classes: list[object]) -> None:
+            self.classes = classes
+            if allowlisted is not None:
+                allowlisted.append(classes)
+
+        def __enter__(self) -> None:
+            if events is not None:
+                events.append("enter")
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            if events is not None:
+                events.append("exit")
+
+    fake_torch.serialization = types.SimpleNamespace(
+        safe_globals=lambda classes: FakeSafeGlobals(classes)
+    )
+
+
 class RecordingLoadStateDictModel:
     def __init__(self) -> None:
         self.loaded_state_dict: object | None = None
@@ -140,6 +177,186 @@ def test_state_dict_load_failures_become_artifact_validation_error(
     assert error.value.__cause__ is exc
     assert "classifier.3.weight" not in str(error.value)
     assert "shape" not in str(error.value)
+
+
+def test_torch_version_is_scoped_allowlisted_for_safe_artifact_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch_version_class = _install_fake_torch_version(monkeypatch)
+    events: list[str] = []
+    allowlisted: list[list[object]] = []
+    load_calls: list[dict[str, object]] = []
+    expected_artifact = {"ok": True}
+
+    fake_torch = types.ModuleType("torch")
+    _attach_fake_safe_globals(
+        fake_torch,
+        events=events,
+        allowlisted=allowlisted,
+    )
+
+    def fake_load(*args, **kwargs):
+        assert events == ["enter"]
+        load_calls.append({"args": args, "kwargs": kwargs})
+        events.append("load")
+        return expected_artifact
+
+    fake_torch.load = fake_load
+    artifact_path = tmp_path / "model.pt"
+
+    artifact = _load_torch_artifact_safely(fake_torch, artifact_path)
+
+    assert artifact is expected_artifact
+    assert allowlisted == [[torch_version_class]]
+    assert events == ["enter", "load", "exit"]
+    assert load_calls == [
+        {
+            "args": (artifact_path,),
+            "kwargs": {
+                "map_location": "cpu",
+                "weights_only": True,
+            },
+        }
+    ]
+
+
+def test_safe_artifact_loading_has_no_unsafe_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_torch_version(monkeypatch)
+    load_calls: list[dict[str, object]] = []
+    fake_torch = types.ModuleType("torch")
+    _attach_fake_safe_globals(fake_torch)
+
+    def fake_load(*args, **kwargs):
+        load_calls.append({"args": args, "kwargs": kwargs})
+        raise RuntimeError("Unsupported global: GLOBAL another.Package")
+
+    fake_torch.load = fake_load
+
+    with pytest.raises(DiseaseArtifactValidationError):
+        _load_torch_artifact_safely(fake_torch, tmp_path / "model.pt")
+
+    assert len(load_calls) == 1
+    assert load_calls[0]["kwargs"]["weights_only"] is True
+
+
+def test_safe_loader_failure_becomes_artifact_validation_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_torch_version(monkeypatch)
+    sensitive_message = "Unsupported global: GLOBAL secret.InternalClass"
+    fake_torch = types.ModuleType("torch")
+    _attach_fake_safe_globals(fake_torch)
+    original = RuntimeError(sensitive_message)
+    fake_torch.load = lambda *args, **kwargs: (_ for _ in ()).throw(original)
+
+    with pytest.raises(DiseaseArtifactValidationError) as error:
+        _load_torch_artifact_safely(fake_torch, tmp_path / "model.pt")
+
+    assert type(error.value) is DiseaseArtifactValidationError
+    assert str(error.value) == "Disease model artifact could not be loaded safely."
+    assert error.value.__cause__ is original
+    assert "secret.InternalClass" not in str(error.value)
+
+
+def test_missing_safe_globals_support_is_model_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_torch_version(monkeypatch)
+    fake_torch = types.ModuleType("torch")
+    fake_torch.serialization = types.SimpleNamespace()
+
+    with pytest.raises(DiseaseModelUnavailableError) as error:
+        _load_torch_artifact_safely(fake_torch, tmp_path / "model.pt")
+
+    assert type(error.value) is DiseaseModelUnavailableError
+
+
+def test_missing_torch_version_support_is_model_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "torch.torch_version", raising=False)
+    fake_torch = types.ModuleType("torch")
+    _attach_fake_safe_globals(fake_torch)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    with pytest.raises(DiseaseModelUnavailableError) as error:
+        _load_torch_artifact_safely(fake_torch, tmp_path / "model.pt")
+
+    assert type(error.value) is DiseaseModelUnavailableError
+
+
+def test_checksum_validation_happens_before_safe_artifact_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_dir = _fake_artifact_dir(tmp_path)
+    manifest = json.loads(
+        (artifact_dir / disease_model.MANIFEST_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest["files"][disease_model.MODEL_FILENAME]["sha256"] = "0" * 64
+    _write_json(artifact_dir / disease_model.MANIFEST_FILENAME, manifest)
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    fake_torch.device = lambda value: value
+    fake_torch.nn = types.SimpleNamespace(
+        Linear=lambda input_features, output_features: object()
+    )
+    fake_transforms = types.ModuleType("torchvision.transforms")
+    fake_transforms.InterpolationMode = types.SimpleNamespace(BILINEAR="bilinear")
+    fake_torchvision = types.ModuleType("torchvision")
+    fake_torchvision.models = types.SimpleNamespace(
+        mobilenet_v3_small=lambda *, weights: object()
+    )
+    fake_torchvision.transforms = fake_transforms
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torchvision", fake_torchvision)
+    monkeypatch.setitem(sys.modules, "torchvision.transforms", fake_transforms)
+    monkeypatch.setattr(
+        disease_model,
+        "_load_torch_artifact_safely",
+        lambda *args, **kwargs: pytest.fail("safe loader should not be called"),
+    )
+
+    predictor = TorchTomatoDiseasePredictor(
+        artifact_dir=artifact_dir,
+        device="cpu",
+    )
+
+    with pytest.raises(DiseaseArtifactValidationError):
+        predictor._load()
+
+
+def test_unsupported_additional_safe_global_remains_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_torch_version(monkeypatch)
+    load_calls = 0
+    fake_torch = types.ModuleType("torch")
+    _attach_fake_safe_globals(fake_torch)
+
+    def fake_load(*args, **kwargs):
+        nonlocal load_calls
+        load_calls += 1
+        raise RuntimeError("Unsupported global: GLOBAL evil.OtherClass")
+
+    fake_torch.load = fake_load
+
+    with pytest.raises(DiseaseArtifactValidationError):
+        _load_torch_artifact_safely(fake_torch, tmp_path / "model.pt")
+
+    assert load_calls == 1
 
 
 def test_valid_tiny_jpeg_base64_is_accepted() -> None:
@@ -350,6 +567,8 @@ def test_lazy_initialization_state_dict_failure_is_artifact_validation_error(
     fake_torch.nn = types.SimpleNamespace(
         Linear=lambda input_features, output_features: object()
     )
+    _install_fake_torch_version(monkeypatch)
+    _attach_fake_safe_globals(fake_torch)
 
     fake_models = types.SimpleNamespace(
         mobilenet_v3_small=lambda *, weights: FakeModel()
@@ -391,6 +610,8 @@ def test_model_construction_failure_is_model_unavailable(
     fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
     fake_torch.device = lambda value: value
     fake_torch.load = lambda *args, **kwargs: _valid_pt_metadata()
+    _install_fake_torch_version(monkeypatch)
+    _attach_fake_safe_globals(fake_torch)
 
     fake_models = types.SimpleNamespace(
         mobilenet_v3_small=lambda *, weights: (_ for _ in ()).throw(
@@ -460,6 +681,8 @@ def test_device_transfer_failure_is_model_unavailable(
     fake_torch.nn = types.SimpleNamespace(
         Linear=lambda input_features, output_features: object()
     )
+    _install_fake_torch_version(monkeypatch)
+    _attach_fake_safe_globals(fake_torch)
 
     fake_models = types.SimpleNamespace(
         mobilenet_v3_small=lambda *, weights: FakeModel()

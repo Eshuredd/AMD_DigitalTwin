@@ -1,9 +1,0 @@
-# Optional runtime dependencies for the real /predict-disease model adapter.
-# Install only after confirming the target AMD ROCm environment.
-# torch and torchvision must be selected as a compatible pair.
-# Keep these separate from requirements.txt so normal API tests can run
-# without PyTorch, torchvision, a GPU, or model loading.
-
-torch
-torchvision
-numpy

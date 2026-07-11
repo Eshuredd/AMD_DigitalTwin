@@ -1,12 +1,12 @@
 # CropTwin: Tomato Irrigation and Disease Digital Twin
 
-CropTwin is a FastAPI-based tomato digital twin that combines crop stage, weather inputs, soil water balance, tomato-leaf disease evidence, irrigation-action simulations, deterministic recommendations, and safe farmer-readable narration.
+CropTwin is a FastAPI-based tomato digital twin with an optional Streamlit workflow frontend. It combines crop stage, weather inputs, soil water balance, tomato-leaf disease evidence, irrigation-action simulations, deterministic recommendations, and safe farmer-readable narration.
 
 It is a hackathon MVP for decision support. The system exposes reasoning behind irrigation guidance, but it is not a production agronomy system and does not replace field inspection or professional advice.
 
 ## Hackathon Context
 
-CropTwin was built for the AMD Developer Hackathon Act II on lablab.ai. This repository contains the backend MVP: explicit agronomic assumptions, a session-scoped API workflow, a trained tomato-leaf classifier adapter, and automated tests for the main route sequence.
+CropTwin was built for the AMD Developer Hackathon Act II on lablab.ai. This repository contains the MVP: explicit agronomic assumptions, a session-scoped FastAPI workflow, a trained tomato-leaf classifier adapter, an optional Streamlit frontend, and automated tests for the main route sequence.
 
 ## Workflow
 
@@ -24,10 +24,16 @@ Ordering matters. The canonical twin state requires cached disease, growth, and 
 
 ```mermaid
 flowchart TD
-    A[Create CropTwin session] --> B[Session store]
+    UI[Streamlit frontend] --> API[FastAPI API]
+    API --> A[Create CropTwin session]
+    A --> B[Session store]
     A --> C[Open-Meteo elevation lookup]
-    D[Base64 tomato-leaf image] --> E[Lazy MobileNetV3-Small disease classifier]
-    F[Weather and irrigation inputs] --> G[Growth stage resolver]
+    UI --> D[Base64 tomato-leaf image]
+    D --> API
+    API --> E[Lazy MobileNetV3-Small disease classifier]
+    UI --> F[Weather and irrigation inputs]
+    F --> API
+    API --> G[Growth stage resolver]
     F --> H[ETo and ETc calculation]
     G --> I[Water balance]
     H --> I
@@ -77,7 +83,7 @@ POST /sessions/{state_id}/narrate
 - Calibration: temperature scaling fitted on the validation split
 - AMD validation context: training and inference validation recorded with ROCm PyTorch on AMD GPU runtime metadata in `test_metrics.json`
 
-The adapter does not import torch or torchvision at FastAPI import time. Optional vision dependencies are listed separately in `requirements-vision.txt`; normal backend tests use dependency overrides and do not require torch, torchvision, a GPU, or model loading.
+The adapter does not import torch or torchvision at FastAPI import time. Normal backend tests use dependency overrides and do not require a GPU or model loading.
 
 ## Class Labels
 
@@ -134,15 +140,10 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python -m pip install -r frontend/requirements.txt
 ```
 
-Install optional vision dependencies only for real classifier inference:
-
-```powershell
-python -m pip install -r requirements-vision.txt
-```
-
-Select a PyTorch and torchvision build compatible with the target AMD ROCm environment. This repository intentionally keeps the vision dependencies separate from the core API requirements.
+Select PyTorch and torchvision builds compatible with the target AMD ROCm environment when installing for real classifier inference.
 
 ## Running The API
 
@@ -155,6 +156,23 @@ Useful local URLs:
 - Swagger UI: `http://127.0.0.1:8000/docs`
 - OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
 - Health endpoint: `http://127.0.0.1:8000/health`
+
+## Running The Streamlit Frontend
+
+Start the API first, then run Streamlit in another terminal:
+
+```powershell
+streamlit run frontend/app.py
+```
+
+The frontend calls `http://127.0.0.1:8000` by default. You can set the API URL before launch or edit it in the Streamlit sidebar:
+
+```powershell
+$env:CROPTWIN_API_BASE_URL="http://127.0.0.1:8000"
+streamlit run frontend/app.py
+```
+
+The Streamlit app exposes the full API workflow: session creation and loading, tomato leaf upload, water-state inputs, twin-state update, action simulation, deterministic recommendation, narration, current state refresh, history refresh, and raw API response inspection.
 
 ## Example Predict Disease Request
 
@@ -195,6 +213,12 @@ app/
   recommendation/          Deterministic recommendation engine
   narration/               Deterministic narration and optional client protocol
 
+frontend/
+  app.py                   Streamlit workflow UI
+  api_client.py            HTTP client and normalized error handling
+  ui_helpers.py            UI formatting, redaction, and reset helpers
+  requirements.txt         Frontend-only dependencies
+
 model_artifacts/
   croptwin_disease/        Trusted deployment bundle for the tomato classifier
 
@@ -210,6 +234,8 @@ tests/
 
 ```powershell
 python -m pytest -v
+python -m pytest -v tests/test_frontend_api_client.py
+python -m pytest -v tests/test_frontend_ui_helpers.py
 python -m pytest -v tests/test_routes/test_disease.py
 ```
 
@@ -246,4 +272,5 @@ These values are MVP defaults, not field-calibrated agronomic recommendations.
 - Tomato is the only supported crop.
 - Weather values are supplied in API requests; live weather ingestion is not implemented.
 - Elevation lookup depends on Open-Meteo unless elevation is supplied in the session request.
-- No authentication, persistent database, production monitoring, or field validation is implemented.
+- The Streamlit frontend is a local workflow client for the API, not a production deployment surface.
+- No authentication, persistent database, production monitoring, deployment hardening, or field validation is implemented.

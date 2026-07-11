@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -313,6 +314,48 @@ def _load_state_dict_strict(
         ) from exc
 
 
+def _load_torch_artifact_safely(
+    torch_module: Any,
+    artifact_path: Path,
+) -> object:
+    try:
+        torch_version_module = importlib.import_module("torch.torch_version")
+        torch_version_class = getattr(torch_version_module, "TorchVersion")
+        safe_globals = getattr(
+            getattr(torch_module, "serialization", None),
+            "safe_globals",
+            None,
+        )
+        if not callable(safe_globals):
+            raise AttributeError("torch.serialization.safe_globals is unavailable")
+    except Exception as exc:
+        raise DiseaseModelUnavailableError(
+            "Installed PyTorch does not support the required safe artifact allowlist."
+        ) from exc
+
+    try:
+        # Future deployment artifacts should store str(torch.__version__) rather
+        # than torch.__version__ to avoid serializing TorchVersion metadata.
+        with safe_globals([torch_version_class]):
+            return torch_module.load(
+                artifact_path,
+                map_location="cpu",
+                weights_only=True,
+            )
+    except TypeError as exc:
+        if "weights_only" in str(exc):
+            raise DiseaseModelUnavailableError(
+                "Installed PyTorch does not support safe artifact loading."
+            ) from exc
+        raise DiseaseArtifactValidationError(
+            "Disease model artifact could not be loaded safely."
+        ) from exc
+    except Exception as exc:
+        raise DiseaseArtifactValidationError(
+            "Disease model artifact could not be loaded safely."
+        ) from exc
+
+
 class TorchTomatoDiseasePredictor:
     model_name = DEFAULT_DISEASE_MODEL_NAME
     model_version = DEFAULT_DISEASE_MODEL_VERSION
@@ -364,18 +407,7 @@ class TorchTomatoDiseasePredictor:
             except Exception as exc:
                 raise DiseaseModelUnavailableError("Requested disease model device is unavailable.") from exc
 
-            try:
-                artifact = torch.load(
-                    metadata.model_path,
-                    map_location="cpu",
-                    weights_only=True,
-                )
-            except TypeError as exc:
-                raise DiseaseModelUnavailableError(
-                    "Installed PyTorch does not support safe weights_only artifact loading."
-                ) from exc
-            except Exception as exc:
-                raise DiseaseArtifactValidationError("Disease model artifact could not be loaded safely.") from exc
+            artifact = _load_torch_artifact_safely(torch, metadata.model_path)
 
             self._validate_pt_artifact(artifact, metadata)
 
