@@ -33,5 +33,5 @@ EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
     CMD curl --fail http://127.0.0.1:7860/_stcore/health || exit 1
-
+    
 CMD ["supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]
