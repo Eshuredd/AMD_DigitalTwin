@@ -1,136 +1,309 @@
-# CropTwin: Tomato Irrigation and Disease Digital Twin
+# CropTwin
 
-CropTwin is a FastAPI-based tomato digital twin with an optional Streamlit workflow frontend. It combines crop stage, weather inputs, soil water balance, tomato-leaf disease evidence, irrigation-action simulations, deterministic recommendations, and safe farmer-readable narration.
+**Tomato Irrigation and Disease Digital Twin**
 
-It is a hackathon MVP for decision support. The system exposes reasoning behind irrigation guidance, but it is not a production agronomy system and does not replace field inspection or professional advice.
+Deterministic agronomy with AI-assisted disease evidence.
 
-## Hackathon Context
+CropTwin is a FastAPI-based tomato-crop digital twin for local or internal MVP demonstration. It combines deterministic crop-water reasoning with a locally stored MobileNetV3-Small tomato-leaf classifier. The classifier contributes disease evidence; the deterministic agronomy engine remains the authority for irrigation recommendations.
 
-CropTwin was built for the AMD Developer Hackathon Act II on lablab.ai. This repository contains the MVP: explicit agronomic assumptions, a session-scoped FastAPI workflow, a trained tomato-leaf classifier adapter, an optional Streamlit frontend, and automated tests for the main route sequence.
+CropTwin does not treat model output as a confirmed diagnosis, and it does not replace field inspection or professional agronomic advice.
 
-## Workflow
+| Component | Status |
+|---|---|
+| FastAPI backend | Implemented |
+| Deterministic water balance | Implemented |
+| Tomato disease classifier | Implemented |
+| Temperature calibration | Implemented |
+| Streamlit frontend | Implemented |
+| Automated tests | Implemented |
+| Persistent database | Not yet implemented |
+| Public deployment | Not yet implemented |
 
-1. Create a session with crop, planting date, location, and soil texture.
-2. Attach disease evidence from the MobileNetV3-Small tomato-leaf classifier.
-3. Compute growth stage and water state from weather, crop coefficient, ETo, ETc, soil assumptions, rainfall, and optional irrigation event.
-4. Assemble the canonical current twin state from cached disease, growth, and water outputs.
-5. Simulate fixed candidate irrigation actions.
-6. Build a deterministic irrigation recommendation.
-7. Generate deterministic narration that explains the existing recommendation.
+## Key Capabilities
 
-Ordering matters. The canonical twin state requires cached disease, growth, and water outputs. Simulation requires the current twin state. Recommendation requires cached simulation results. Narration requires a cached recommendation.
+- Tomato session creation with location, planting date, and soil texture.
+- Open-Meteo elevation lookup when session elevation is omitted.
+- Tomato growth-stage determination from planting date.
+- ETo calculation with Penman-Monteith and Hargreaves-Samani fallback.
+- ETc, root-zone depletion, moisture-state, and stress-band estimation.
+- Tomato-leaf image classification with calibrated confidence and uncertainty bands.
+- Current digital-twin state creation from cached disease, growth, and water outputs.
+- Candidate irrigation-action simulation.
+- Deterministic irrigation recommendation with disease-related caution and inspection advisory.
+- Farmer-readable narration of an already-selected recommendation.
+- Session history.
+- Streamlit workflow interface.
+- Direct FastAPI, Swagger, and ReDoc access.
+
+## Problem Statement
+
+Irrigation decisions often depend on disconnected data: crop stage, weather, soil assumptions, recent irrigation, and visible plant symptoms. Disease symptoms can matter for irrigation caution, especially leaf-wetness risk, but a probabilistic image classifier should not directly control irrigation.
+
+CropTwin separates those responsibilities. Physical and agronomic calculations are deterministic. Disease inference supplies supporting evidence and uncertainty. The recommendation engine chooses irrigation actions from water-state and simulation outputs, with disease evidence used only for caution, constraints, and inspection advice.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    UI[Streamlit frontend] --> API[FastAPI API]
-    API --> A[Create CropTwin session]
-    A --> B[Session store]
-    A --> C[Open-Meteo elevation lookup]
-    UI --> D[Base64 tomato-leaf image]
-    D --> API
-    API --> E[Lazy MobileNetV3-Small disease classifier]
-    UI --> F[Weather and irrigation inputs]
-    F --> API
-    API --> G[Growth stage resolver]
-    F --> H[ETo and ETc calculation]
-    G --> I[Water balance]
-    H --> I
-    E --> J[Canonical twin state]
-    I --> J
-    B --> J
-    J --> K[Candidate action simulation]
-    K --> L[Deterministic recommendation]
-    L --> M[Deterministic narration]
-    J --> N[Session state and history]
+    UI[Streamlit frontend] --> API[FastAPI routes]
+    API --> STORE[In-memory session state store]
+    API --> DISEASE[Disease predictor]
+    DISEASE --> MODEL[MobileNetV3-Small artifact]
+    DISEASE --> TEMP[Temperature scaling]
+    DISEASE --> UNC[Uncertainty policy]
+    API --> GROWTH[Growth stage resolver]
+    API --> WATER[ETo and water balance]
+    GROWTH --> TWIN[Current digital twin state]
+    WATER --> TWIN
+    DISEASE --> EVIDENCE[Disease evidence only]
+    EVIDENCE --> TWIN
+    TWIN --> SIM[Action simulator]
+    SIM --> REC[Deterministic recommendation engine]
+    REC --> NARR[Narration layer]
+
+    EVIDENCE -. supporting evidence .-> REC
+    SIM == recommendation authority ==> REC
 ```
 
-The deterministic agronomy engine owns irrigation decisions. The classifier supplies disease evidence only. It does not compute water balance, run simulations, choose irrigation, or provide pesticide, fungicide, insecticide, fertilizer, dosage, or treatment advice.
+The disease model does not compute water balance, run simulations, or choose the irrigation action. The narrator explains a cached recommendation; it does not recompute water balance, rerun simulation, or override the deterministic recommendation.
 
-## API Endpoints
+## End-to-End Workflow
+
+1. Create or load a tomato session.
+2. Upload a tomato-leaf image.
+3. Receive disease evidence, calibrated confidence, and uncertainty.
+4. Enter weather and optional irrigation information.
+5. Compute ETo, ETc, water state, and stress.
+6. Update the current digital-twin state.
+7. Simulate candidate irrigation actions.
+8. Generate the deterministic recommendation.
+9. Generate farmer-readable narration.
+10. Review current state and history.
+
+Supported simulation actions:
+
+| Action enum | Meaning |
+|---|---|
+| `IRRIGATE_NOW` | Irrigate immediately |
+| `IRRIGATE_IN_6H` | Irrigate in 6 hours |
+| `IRRIGATE_TOMORROW_AM` | Irrigate tomorrow morning |
+| `NO_IRRIGATION_24H` | Do not irrigate during the next 24 hours |
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Backend API | FastAPI |
+| Validation and schemas | Pydantic |
+| Disease model runtime | PyTorch / Torchvision |
+| Model architecture | MobileNetV3-Small |
+| Image handling | Pillow |
+| Frontend | Streamlit |
+| HTTP client | httpx |
+| Testing | pytest |
+| State storage | In-memory state store |
+| Recorded training/runtime context | AMD ROCm PyTorch environment |
+
+The disease model is a locally stored Torchvision/PyTorch artifact. CropTwin does not use Hugging Face and does not download model weights at runtime.
+
+## Disease Model
+
+`POST /sessions/{state_id}/predict-disease` runs a trained tomato-leaf classifier through a lazy dependency-injected predictor.
+
+| Property | Value |
+|---|---|
+| Architecture | MobileNetV3-Small |
+| Runtime model reconstruction | `torchvision.models.mobilenet_v3_small(weights=None)` |
+| Trained weights | Loaded from local artifact |
+| Dataset | PlantVillage tomato subset |
+| Classes | 10 |
+| Input size | 224 x 224 |
+| Supported API `model_version` | `1.0` |
+| Calibration | Temperature scaling fitted on validation split |
+| Runtime artifact directory | `model_artifacts/croptwin_disease/` |
+
+Training used ImageNet-pretrained Torchvision initialization, classifier-head training, and final feature-block fine-tuning. Runtime inference reconstructs the architecture with `weights=None`, then loads trained weights from the committed artifact.
+
+The model adapter validates the artifact before inference:
+
+- required-file presence
+- manifest checksums
+- class-order compatibility
+- uncertainty policy compatibility
+- temperature metadata compatibility
+- safe `weights_only=True` loading
+- scoped `TorchVersion` allowlist compatibility for artifact metadata
+
+Important artifact files:
 
 ```text
-GET  /health
-GET  /system-info
-
-POST /sessions
-GET  /sessions/{state_id}
-GET  /sessions/{state_id}/history
-
-POST /sessions/{state_id}/predict-disease
-POST /sessions/{state_id}/compute-water-state
-POST /sessions/{state_id}/update-twin-state
-POST /sessions/{state_id}/simulate-actions
-POST /sessions/{state_id}/recommend
-POST /sessions/{state_id}/narrate
+model_artifacts/croptwin_disease/
+  croptwin_tomato_mobilenet_v3_small.pt
+  manifest.json
+  class_to_idx.json
+  temperature.json
+  uncertainty_policy.json
+  test_metrics.json
+  per_class_metrics.csv
+  confusion_matrix.csv
 ```
 
-## Disease Classifier
+The classifier output is disease evidence, not a confirmed diagnosis.
 
-`POST /sessions/{state_id}/predict-disease` uses a trained MobileNetV3-Small tomato-leaf classifier through a lazy dependency-injected adapter.
+## Model Evaluation
 
-- Model adapter: `app/disease/model.py`
-- Canonical classes: `app/disease/classes.py`
-- Confidence and uncertainty policy: `app/disease/uncertainty.py`
-- Artifact directory: `model_artifacts/croptwin_disease/`
-- Artifact override: `CROPTWIN_DISEASE_ARTIFACT_DIR`, used by both inference and `/system-info`
-- Supported `model_version`: `"1.0"`
-- Dataset: PlantVillage tomato subset, 10 classes
-- Input: base64 or `data:image/...;base64,...`
-- Preprocessing: resize shorter side to 256, center crop to 224 x 224, tensor conversion, artifact normalization
-- Architecture: MobileNetV3-Small with ImageNet-pretrained initialization during training, classifier-head training followed by final-block fine-tuning
-- Calibration: temperature scaling fitted on the validation split
-- AMD validation context: training and inference validation recorded with ROCm PyTorch on AMD GPU runtime metadata in `test_metrics.json`
-
-The adapter does not import torch or torchvision at FastAPI import time. Normal backend tests use dependency overrides and do not require a GPU or model loading.
-
-## Class Labels
-
-The artifact class order is:
-
-1. `Tomato___Bacterial_spot`
-2. `Tomato___Early_blight`
-3. `Tomato___Late_blight`
-4. `Tomato___Leaf_Mold`
-5. `Tomato___Septoria_leaf_spot`
-6. `Tomato___Spider_mites Two-spotted_spider_mite`
-7. `Tomato___Target_Spot`
-8. `Tomato___Tomato_Yellow_Leaf_Curl_Virus`
-9. `Tomato___Tomato_mosaic_virus`
-10. `Tomato___healthy`
-
-Spider mites are mapped to `DiseaseCategory.NONE` because the accepted API schema has fungal, bacterial, viral, and none categories, but no pest category.
-
-## Verified Artifact Metrics
-
-These values were read from the files in `model_artifacts/croptwin_disease/`:
+The following values were read from the current artifact files in `model_artifacts/croptwin_disease/`.
 
 | Metric | Value |
 |---|---:|
-| Temperature | `1.0508726748943829` |
-| Confidence acceptance threshold | `0.7` |
-| Validation ECE after calibration | `0.008117275312542915` |
-| Test ECE after calibration | `0.008560522925108671` |
+| Test sample count | `2411` |
 | Test accuracy | `0.953961012028204` |
 | Test macro precision | `0.9514433459718663` |
 | Test macro recall | `0.9468968994181605` |
 | Test macro F1 | `0.9478684631559062` |
+| Calibration temperature | `1.0508726748943829` |
+| Validation ECE before calibration | `0.01117339072516188` |
+| Validation ECE after calibration | `0.008117275312542915` |
+| Test ECE before calibration | `0.006922619584656786` |
+| Test ECE after calibration | `0.008560522925108671` |
+| Confidence acceptance threshold | `0.7` |
+| Validation images for threshold selection | `2397` |
+| Validation coverage at threshold | `0.9362` |
+| Accepted validation accuracy | `0.9724` |
+| Validation error capture rate | `0.5231` |
 
-The test ECE was already very small before calibration and changed slightly after validation-fitted temperature scaling. CropTwin does not claim that laboratory-background PlantVillage accuracy equals real-farm performance.
+Temperature scaling was selected on validation data. The classifier was evaluated on an untouched test split. The test ECE was already small before calibration and was slightly larger after applying the validation-fitted temperature, so this README does not claim calibration improved test ECE.
+
+Lowest per-class F1 values in the current artifact:
+
+| Class | Support | Precision | Recall | F1 |
+|---|---:|---:|---:|---:|
+| `Tomato___Target_Spot` | `212` | `0.8156862745098039` | `0.9811320754716981` | `0.8907922912205568` |
+| `Tomato___Early_blight` | `150` | `0.9219858156028369` | `0.8666666666666667` | `0.8934707903780069` |
+| `Tomato___Spider_mites Two-spotted_spider_mite` | `252` | `0.9734513274336283` | `0.873015873015873` | `0.9205020920502092` |
+
+PlantVillage imagery uses controlled backgrounds and does not establish real-field generalization.
 
 ## Uncertainty Policy
 
-The classifier keeps the top-1 label even when confidence is low. Low-confidence predictions remain tentative disease evidence and should trigger manual-inspection behavior downstream.
+The confidence policy is implemented in `app/disease/uncertainty.py` and mirrored in `uncertainty_policy.json`.
 
-- `confidence < 0.70`: high uncertainty
-- `0.70 <= confidence < 0.90`: medium uncertainty
-- `confidence >= 0.90`: low uncertainty
-- `uncertainty_score = 1 - confidence`
+| Calibrated confidence | Uncertainty band |
+|---|---|
+| `< 0.70` | `high` |
+| `>= 0.70` and `< 0.90` | `medium` |
+| `>= 0.90` | `low` |
 
-The `0.70` acceptance threshold was selected from validation analysis. At this threshold, validation coverage was `0.9362`, accepted validation accuracy was `0.9724`, and validation error capture was `0.5231`.
+`uncertainty_score = 1 - confidence`.
 
-## Local Installation
+Low confidence does not replace the top-1 label with `uncertain`. The top-1 label remains visible as tentative evidence. High uncertainty should trigger clearer image capture and manual inspection. Confidence is not a guarantee of correctness, and some incorrect predictions may still have high confidence.
+
+## Deterministic Agronomy Engine
+
+CropTwin uses deterministic modules for crop stage, ETo, water balance, simulation, and recommendation. The same inputs produce the same domain result.
+
+Implemented assumptions and calculations include:
+
+- Tomato-only crop support.
+- FAO-56 Table 11-style tomato stage durations: initial 30, development 40, mid-season 45, late-season 30 days.
+- Stage Kc values: initial `0.60`, development `0.80`, mid-season `1.15`, late-season `0.80`.
+- Penman-Monteith ETo when shortwave radiation is available.
+- Hargreaves-Samani ETo fallback when shortwave radiation is missing.
+- ETc from ETo and Kc.
+- Soil texture assumptions for field capacity and wilting point.
+- Root depth assumptions by growth stage.
+- Total available water (TAW).
+- Readily available water threshold using `p_allowable = 0.50`.
+- Root-zone depletion update from ETc, rainfall, and a non-duplicated irrigation event.
+- Moisture-state and stress-band classification.
+- 24-hour candidate action simulation.
+- Deterministic recommendation selection from current state and cached simulation.
+
+Disease evidence can add caution reasons, inspection advisory, or irrigation constraints such as avoiding overhead irrigation for stronger fungal wetness risk. It does not override the water engine.
+
+## Streamlit Frontend
+
+The Streamlit frontend lives in `frontend/`. It is an HTTP client for the FastAPI API and does not import backend model or agronomy modules directly.
+
+The frontend supports:
+
+- backend connection status
+- collapsed technical settings
+- session creation and loading
+- read-only active-session display
+- tomato-leaf upload
+- disease evidence, confidence, uncertainty, and top probabilities
+- weather and irrigation input
+- water-state and twin-state summaries
+- action simulation comparison
+- deterministic recommendation display
+- narration
+- current state and history refresh
+- raw API responses in collapsed expanders
+
+The frontend uses `CROPTWIN_API_BASE_URL` or the Settings panel to choose the API target. The default target is `http://127.0.0.1:8000`.
+
+No screenshot files are currently stored in the repository.
+
+## API Endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Process health |
+| `GET` | `/system-info` | Model and agronomy metadata |
+| `POST` | `/sessions` | Create a session |
+| `GET` | `/sessions/{state_id}` | Read current session state |
+| `GET` | `/sessions/{state_id}/history` | Read twin history |
+| `POST` | `/sessions/{state_id}/predict-disease` | Run disease inference |
+| `POST` | `/sessions/{state_id}/compute-water-state` | Compute growth and water state |
+| `POST` | `/sessions/{state_id}/update-twin-state` | Build current twin state |
+| `POST` | `/sessions/{state_id}/simulate-actions` | Simulate candidate actions |
+| `POST` | `/sessions/{state_id}/recommend` | Generate recommendation |
+| `POST` | `/sessions/{state_id}/narrate` | Explain recommendation |
+
+Local API documentation:
+
+- Swagger UI: `http://127.0.0.1:8000/docs`
+- ReDoc: `http://127.0.0.1:8000/redoc`
+- OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
+
+## Repository Structure
+
+```text
+AMD_DigitalTwin/
+  app/
+    disease/
+    external/
+    growth_stage/
+    narration/
+    recommendation/
+    routes/
+    simulation/
+    water/
+    dependencies.py
+    main.py
+    schemas.py
+    state_store.py
+  frontend/
+    app.py
+    api_client.py
+    ui_helpers.py
+    requirements.txt
+    README.md
+  model_artifacts/
+    croptwin_disease/
+  tests/
+  requirements.txt
+  README.md
+```
+
+There is no `requirements-vision.txt` in the current checkout; the vision runtime packages are listed in `requirements.txt`.
+
+## Installation
+
+The project has been locally tested with Python 3.12. The repository does not currently declare a formal Python version range in `pyproject.toml`.
+
+Clone and create an environment:
 
 ```powershell
 git clone https://github.com/Eshuredd/AMD_DigitalTwin.git
@@ -139,42 +312,52 @@ cd AMD_DigitalTwin
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
+```
+
+Install backend, model runtime, and test dependencies:
+
+```powershell
 python -m pip install -r requirements.txt
+```
+
+Install frontend dependencies:
+
+```powershell
 python -m pip install -r frontend/requirements.txt
 ```
 
-Select PyTorch and torchvision builds compatible with the target AMD ROCm environment when installing for real classifier inference.
+`requirements.txt` includes `torch` and `torchvision`. Select builds compatible with the target CPU, GPU, or AMD ROCm runtime. The repository does not require a Hugging Face install step.
 
-## Running The API
+## Running the Application
+
+Use two terminals during local development.
+
+Terminal 1: start FastAPI.
 
 ```powershell
+.\.venv\Scripts\Activate.ps1
 uvicorn app.main:app --reload
 ```
 
-Useful local URLs:
+Terminal 2: start Streamlit.
 
+```powershell
+.\.venv\Scripts\Activate.ps1
+streamlit run frontend/app.py
+```
+
+Default local URLs:
+
+- API: `http://127.0.0.1:8000`
 - Swagger UI: `http://127.0.0.1:8000/docs`
-- OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
-- Health endpoint: `http://127.0.0.1:8000/health`
+- ReDoc: `http://127.0.0.1:8000/redoc`
+- Streamlit: usually `http://localhost:8501`
 
-## Running The Streamlit Frontend
+`--reload` is for local development, not production serving.
 
-Start the API first, then run Streamlit in another terminal:
+## Using the API Directly
 
-```powershell
-streamlit run frontend/app.py
-```
-
-The frontend calls `http://127.0.0.1:8000` by default. You can set the API URL before launch or edit it in the Streamlit sidebar:
-
-```powershell
-$env:CROPTWIN_API_BASE_URL="http://127.0.0.1:8000"
-streamlit run frontend/app.py
-```
-
-The Streamlit app exposes the full API workflow: session creation and loading, tomato leaf upload, water-state inputs, twin-state update, action simulation, deterministic recommendation, narration, current state refresh, history refresh, and raw API response inspection.
-
-## Example Predict Disease Request
+The disease endpoint expects the path `state_id` to match the body `state_id`.
 
 ```json
 {
@@ -184,7 +367,7 @@ The Streamlit app exposes the full API workflow: session creation and loading, t
 }
 ```
 
-The request also accepts a data URI prefix:
+Data URI prefixes are accepted:
 
 ```json
 {
@@ -194,83 +377,80 @@ The request also accepts a data URI prefix:
 }
 ```
 
-When a request body contains `state_id`, it must match the path `state_id`.
+For full request and response schemas, use Swagger or ReDoc.
 
-## Repository Structure
+## Configuration
 
-```text
-app/
-  main.py                  FastAPI application wiring
-  schemas.py               Pydantic request and response schemas
-  dependencies.py          Shared dependencies, predictor singleton, and error handling
-  state_store.py           In-memory session and output cache
-  routes/                  API route modules
-  external/                Elevation API client; weather client placeholder
-  growth_stage/            Tomato growth-stage resolver
-  water/                   ETo, crop coefficient, and water-balance modules
-  disease/                 Class mapping, uncertainty policy, and lazy model adapter
-  simulation/              Candidate irrigation-action simulator
-  recommendation/          Deterministic recommendation engine
-  narration/               Deterministic narration and optional client protocol
+| Variable | Default | Used by | Purpose |
+|---|---|---|---|
+| `CROPTWIN_DISEASE_ARTIFACT_DIR` | `model_artifacts/croptwin_disease` | Backend | Overrides the disease artifact directory for inference and `/system-info`. |
+| `CROPTWIN_API_BASE_URL` | `http://127.0.0.1:8000` | Frontend | Sets the FastAPI target for the Streamlit HTTP client. |
 
-frontend/
-  app.py                   Streamlit workflow UI
-  api_client.py            HTTP client and normalized error handling
-  ui_helpers.py            UI formatting, redaction, and reset helpers
-  requirements.txt         Frontend-only dependencies
+`.env.example` currently documents `CROPTWIN_API_BASE_URL`.
 
-model_artifacts/
-  croptwin_disease/        Trusted deployment bundle for the tomato classifier
+## Testing
 
-tests/
-  test_api_workflow.py     End-to-end API workflow and error-path tests
-  test_disease_classes.py  Disease class mapping tests
-  test_disease_model.py    Image decoding and artifact validation tests
-  test_disease_uncertainty.py
-  test_routes/             Focused route tests
-```
-
-## Running Tests
+Run the complete test suite:
 
 ```powershell
 python -m pytest -v
-python -m pytest -v tests/test_frontend_api_client.py
-python -m pytest -v tests/test_frontend_ui_helpers.py
-python -m pytest -v tests/test_routes/test_disease.py
 ```
 
-The normal test suite uses FastAPI dependency overrides for the disease predictor. It does not require torch, torchvision, a GPU, ROCm, or loading the real `.pt` artifact. An optional smoke test skips when the vision runtime or real artifact execution is unavailable.
+Focused commands:
 
-## Agronomic Assumptions
+```powershell
+python -m pytest -v tests/test_disease_model.py
+python -m pytest -v tests/test_routes/test_disease.py
+python -m pytest -v tests/test_frontend_api_client.py
+python -m pytest -v tests/test_frontend_ui_helpers.py
+```
 
-These values are MVP defaults, not field-calibrated agronomic recommendations.
+Current local verification:
 
-| Assumption | Source value |
+| Command | Result |
 |---|---|
-| Crop support | Tomato only |
-| Growth-stage source | `fao56_table11_tomato_apr_may_mediterranean_stage_lengths` |
-| Tomato stage durations | initial 30, development 40, mid-season 45, late-season 30 days |
-| Kc source | `mvp_fao56_style_tomato_assumed_kc_by_growth_stage` |
-| Kc by stage | initial 0.60, development 0.80, mid-season 1.15, late-season 0.80 |
-| Soil parameter basis | `mvp_assumed_volumetric_field_capacity_wilting_point_by_soil_texture` |
-| Root-depth basis | `mvp_assumed_tomato_root_depth_by_growth_stage` |
-| Allowable depletion fraction | 0.50 |
-| Fungal recommendation confidence threshold | 0.80 |
-| Narration length safety limit | 1200 characters |
+| `python -m pytest -v` | `130 passed in 4.42s` |
+| `python -m pytest -v tests/test_frontend_api_client.py` | `10 passed in 0.11s` |
+| `python -m pytest -v tests/test_frontend_ui_helpers.py` | `11 passed in 0.04s` |
 
-## Safety And Limitations
+The full suite includes API workflow tests, route tests, disease artifact validation, image validation, uncertainty policy tests, ETo tests, and frontend HTTP/helper tests. Some route tests use dependency overrides; the optional real artifact smoke test runs when the local runtime can execute it.
 
-- The deterministic water model owns crop-water calculations.
-- The deterministic recommendation engine owns the irrigation action.
-- Disease evidence can add caution, uncertainty, constraints, and inspection advice.
-- Disease evidence does not directly choose the irrigation action.
-- Narration cannot recompute water balance, rerun simulation, or change the recommendation.
-- High-uncertainty disease evidence should be inspected before relying on disease-specific constraints.
-- PlantVillage imagery has lab-background limitations and is not equivalent to field validation.
-- CropTwin does not provide treatment, chemical, dosage, or pesticide advice.
-- In-memory state is lost when the process restarts.
-- Tomato is the only supported crop.
-- Weather values are supplied in API requests; live weather ingestion is not implemented.
-- Elevation lookup depends on Open-Meteo unless elevation is supplied in the session request.
-- The Streamlit frontend is a local workflow client for the API, not a production deployment surface.
-- No authentication, persistent database, production monitoring, deployment hardening, or field validation is implemented.
+## Current Limitations
+
+- State is stored in memory and is lost when the backend process restarts.
+- No persistent database is implemented.
+- No authentication or multi-user isolation is implemented.
+- Weather values are manually entered; live weather ingestion is not implemented.
+- Open-Meteo is used only for elevation lookup when session elevation is omitted.
+- PlantVillage images have controlled backgrounds and do not prove real-field performance.
+- Unrelated or out-of-distribution images may still produce predictions.
+- Confidence thresholds were selected from the current validation split.
+- No public production deployment is included.
+- No field validation is included.
+- No treatment recommendation engine is included.
+- Local development servers are not production hosting.
+
+## Future Improvements
+
+- SQLite or PostgreSQL persistence.
+- Authentication and user/session separation.
+- Live weather integration.
+- Real-field tomato-leaf dataset evaluation.
+- Out-of-distribution and non-tomato image rejection.
+- Model monitoring and recalibration workflow.
+- Deployment packaging.
+- Dockerization.
+- Structured logs and observability.
+- CI.
+- Production serving.
+- Mobile-friendly UI improvements.
+
+## Safety and Scope
+
+CropTwin is an MVP decision-support system.
+
+- Disease output is supporting evidence, not a confirmed diagnosis.
+- Irrigation decisions come from deterministic agronomy logic.
+- High-uncertainty disease results require manual inspection.
+- The project does not provide pesticide, fertilizer, fungicide, insecticide, chemical, or dosage advice.
+- The project does not replace professional agronomic advice or field inspection.

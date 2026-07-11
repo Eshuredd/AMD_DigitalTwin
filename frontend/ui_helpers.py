@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from html import escape
 from typing import Any
 
 
@@ -101,3 +102,70 @@ def sanitize_error_details(value: Any) -> Any:
     if isinstance(value, list):
         return [sanitize_error_details(item) for item in value]
     return value
+
+
+def escape_html(value: object) -> str:
+    return escape(str(value), quote=True)
+
+
+def badge_tone_for_uncertainty(uncertainty_band: str | None) -> str:
+    if uncertainty_band == "low":
+        return "success"
+    if uncertainty_band == "medium":
+        return "warning"
+    if uncertainty_band == "high":
+        return "danger"
+    return "neutral"
+
+
+def badge_tone_for_stress(stress_band: str | None) -> str:
+    if stress_band == "low":
+        return "success"
+    if stress_band == "medium":
+        return "warning"
+    if stress_band == "high":
+        return "danger"
+    return "neutral"
+
+
+def badge_tone_for_moisture(moisture_state: str | None) -> str:
+    if moisture_state == "adequate":
+        return "success"
+    if moisture_state == "moderate_deficit":
+        return "warning"
+    if moisture_state == "depleted":
+        return "danger"
+    return "neutral"
+
+
+def workflow_progress_states(completed: dict[str, bool]) -> list[dict[str, str]]:
+    labels = [
+        ("session", "Session"),
+        ("disease", "Disease evidence"),
+        ("water", "Water state"),
+        ("twin", "Twin state"),
+        ("simulation", "Simulations"),
+        ("recommendation", "Recommendation"),
+        ("narration", "Narration"),
+    ]
+    active_assigned = False
+    states: list[dict[str, str]] = []
+
+    for key, label in labels:
+        if completed.get(key, False):
+            state = "completed"
+            symbol = "check"
+        elif not active_assigned:
+            state = "active"
+            symbol = "current"
+            active_assigned = True
+        else:
+            state = "pending"
+            symbol = "pending"
+        states.append({"key": key, "label": label, "state": state, "symbol": symbol})
+
+    return states
+
+
+def format_action_label(action: str) -> str:
+    return action.replace("_", " ").title()

@@ -6,12 +6,18 @@ import pytest
 
 from frontend.ui_helpers import (
     MAX_IMAGE_BYTES,
+    badge_tone_for_moisture,
+    badge_tone_for_stress,
+    badge_tone_for_uncertainty,
     encode_image_bytes_to_base64,
+    escape_html,
+    format_action_label,
     format_percent,
     humanize_disease_label,
     keys_to_clear_after,
     sanitize_error_details,
     top_class_probabilities,
+    workflow_progress_states,
 )
 
 
@@ -60,3 +66,35 @@ def test_sanitize_error_details_redacts_nested_base64() -> None:
     )
 
     assert sanitized == {"outer": [{"image_base64": "[redacted]", "other": "visible"}]}
+
+
+def test_escape_html_quotes_user_controlled_text() -> None:
+    assert escape_html('<script data-x="1">') == "&lt;script data-x=&quot;1&quot;&gt;"
+
+
+def test_badge_tones_for_status_values() -> None:
+    assert badge_tone_for_uncertainty("low") == "success"
+    assert badge_tone_for_uncertainty("medium") == "warning"
+    assert badge_tone_for_uncertainty("high") == "danger"
+    assert badge_tone_for_stress("low") == "success"
+    assert badge_tone_for_stress("medium") == "warning"
+    assert badge_tone_for_stress("high") == "danger"
+    assert badge_tone_for_moisture("adequate") == "success"
+    assert badge_tone_for_moisture("moderate_deficit") == "warning"
+    assert badge_tone_for_moisture("depleted") == "danger"
+
+
+def test_workflow_progress_states_identify_active_step() -> None:
+    states = workflow_progress_states({"session": True, "disease": True})
+
+    assert [state["state"] for state in states[:4]] == [
+        "completed",
+        "completed",
+        "active",
+        "pending",
+    ]
+    assert states[2]["label"] == "Water state"
+
+
+def test_format_action_label() -> None:
+    assert format_action_label("IRRIGATE_TOMORROW_AM") == "Irrigate Tomorrow Am"

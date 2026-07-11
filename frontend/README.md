@@ -1,6 +1,33 @@
 # CropTwin Streamlit Frontend
 
-This folder contains the optional Streamlit user interface for the CropTwin FastAPI backend. It does not duplicate agronomic, recommendation, disease, simulation, or narration logic; all domain decisions come from the API.
+This folder contains the optional Streamlit interface for the CropTwin FastAPI backend. The frontend is only an HTTP client: it does not recompute agronomy, disease confidence, simulation outcomes, recommendations, or narration.
+
+## Design
+
+The interface uses a light agriculture-and-technology dashboard style: warm off-white page background, white cards, a compact pale-sage sidebar, forest-green primary actions, and restrained terracotta accents for tomato or disease-related details.
+
+The sidebar is intentionally small: it keeps connection status visible, provides load/reset controls, and moves infrastructure options into a collapsed **Settings** expander. The active session is shown in the main page as a read-only status bar above the workflow tabs, so the sidebar does not duplicate workflow navigation.
+
+Palette:
+
+| Role | Hex |
+|---|---|
+| Page background | `#F6F7F2` |
+| Primary surface | `#FFFFFF` |
+| Secondary surface | `#EDF2EA` |
+| Sidebar background | `#E8EFE7` |
+| Primary green | `#28634A` |
+| Primary green hover | `#1F4E3A` |
+| Sage accent | `#789274` |
+| Soft sage highlight | `#DCE8D9` |
+| Muted terracotta accent | `#BC6C55` |
+| Primary text | `#1F2923` |
+| Secondary text | `#667169` |
+| Muted text | `#7D8880` |
+| Border | `#D8E1D7` |
+| Success | `#2F7A4A` |
+| Warning | `#B7791F` |
+| Error | `#B54747` |
 
 ## Install
 
@@ -42,3 +69,5 @@ The same base URL can also be edited in the Streamlit sidebar.
 7. Generate narration and inspect session history.
 
 The disease inference request uses a longer timeout because model loading and first inference can be slower than ordinary API calls.
+
+Session creation fetches elevation automatically from Open-Meteo when the elevation override is disabled. The lookup uses the latitude and longitude entered in the form; the location name is stored as a label and is not geocoded.
