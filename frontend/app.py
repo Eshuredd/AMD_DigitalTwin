@@ -115,22 +115,22 @@ def inject_custom_css() -> None:
         """
         <style>
         :root {
-            --ct-bg: #F6F7F2;
-            --ct-surface: #FFFFFF;
-            --ct-surface-2: #EDF2EA;
-            --ct-sidebar: #E8EFE7;
-            --ct-green: #28634A;
-            --ct-green-hover: #1F4E3A;
-            --ct-sage: #789274;
-            --ct-sage-soft: #DCE8D9;
-            --ct-tomato: #BC6C55;
-            --ct-text: #1F2923;
-            --ct-muted: #667169;
-            --ct-muted-2: #7D8880;
-            --ct-border: #D8E1D7;
-            --ct-success: #2F7A4A;
-            --ct-warning: #B7791F;
-            --ct-error: #B54747;
+            --ct-bg: #101810;
+            --ct-surface: #17271D;
+            --ct-surface-2: #213427;
+            --ct-sidebar: #131F18;
+            --ct-green: #95C89E;
+            --ct-green-hover: #B0D2B4;
+            --ct-sage: #9EBA9B;
+            --ct-sage-soft: #2D463B;
+            --ct-tomato: #CF8A73;
+            --ct-text: #EDF6EB;
+            --ct-muted: #A8B9A9;
+            --ct-muted-2: #889988;
+            --ct-border: #2F4B3F;
+            --ct-success: #86C98D;
+            --ct-warning: #D8A55A;
+            --ct-error: #DB7A6B;
         }
 
         html, body, [data-testid="stAppViewContainer"] {
@@ -142,6 +142,7 @@ def inject_custom_css() -> None:
             max-width: 1120px;
             padding-top: 1.6rem;
             padding-bottom: 3rem;
+            background: transparent;
         }
 
         [data-testid="stSidebar"] {
@@ -159,12 +160,12 @@ def inject_custom_css() -> None:
         }
 
         .ct-hero {
-            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAF5 100%);
+            background: linear-gradient(180deg, #17271D 0%, #1E372D 100%);
             border: 1px solid var(--ct-border);
             border-radius: 16px;
             padding: 22px 24px;
             margin-bottom: 14px;
-            box-shadow: 0 8px 22px rgba(31, 42, 36, 0.06);
+            box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
         }
 
         .ct-eyebrow {
