@@ -1,0 +1,43 @@
+{
+  "bundle_version": 1,
+  "project": "CropTwin",
+  "purpose": "Tomato leaf disease evidence classifier",
+  "model_name": "mobilenet_v3_small",
+  "input_size": [
+    224,
+    224
+  ],
+  "number_of_classes": 10,
+  "temperature": 1.0508726748943829,
+  "confidence_threshold": 0.7,
+  "files": {
+    "class_to_idx.json": {
+      "size_bytes": 349,
+      "sha256": "30b496ac0a98b4dac08f701ce87de01496e5adbcc5496a8749a44abb5ca5fd6e"
+    },
+    "confusion_matrix.csv": {
+      "size_bytes": 791,
+      "sha256": "a95f5832b3202af3e944b54fb1f3d5b7e536d594bce5c127457ff68d4709d45c"
+    },
+    "croptwin_tomato_mobilenet_v3_small.pt": {
+      "size_bytes": 6252533,
+      "sha256": "4fba09dacb8ecd97b2c41045d55ad47b2a54b70a2d4c7aedeae98aaed181d41c"
+    },
+    "per_class_metrics.csv": {
+      "size_bytes": 921,
+      "sha256": "2c19e0e4e6298de91428f0eb463dc04da56d6bb79814e96ebdd922bb00354288"
+    },
+    "temperature.json": {
+      "size_bytes": 640,
+      "sha256": "0f0b5aec01a9f83617b7f1471ff378820b7b97728ae18f30d4ba72f5f66bbb64"
+    },
+    "test_metrics.json": {
+      "size_bytes": 3612,
+      "sha256": "1f822455979fa08b8d8db86c19a94255e5e2cdc9be7b8b4ed8c471b4219fdb9e"
+    },
+    "uncertainty_policy.json": {
+      "size_bytes": 1059,
+      "sha256": "23e891230ee0fc9ab24b80d1f96d1a16d2e22cfb8aa757a01bc653a9c7cad5bb"
+    }
+  }
+}

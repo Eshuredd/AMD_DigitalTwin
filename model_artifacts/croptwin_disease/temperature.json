@@ -1,0 +1,22 @@
+{
+  "method": "temperature_scaling",
+  "temperature": 1.0508726748943829,
+  "fitted_on_split": "validation",
+  "ece_bins": 15,
+  "validation_before": {
+    "negative_log_likelihood": 0.14898382127285004,
+    "expected_calibration_error": 0.01117339072516188,
+    "average_confidence": 0.950684130191803,
+    "accuracy": 0.9457655549049377
+  },
+  "validation_after": {
+    "negative_log_likelihood": 0.14870858192443848,
+    "expected_calibration_error": 0.008117275312542915,
+    "average_confidence": 0.9474250078201294,
+    "accuracy": 0.9457655549049377
+  },
+  "optimizer": {
+    "optimizer": "LBFGS",
+    "optimization_calls": 86
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "policy_version": 1,
+  "method": "calibrated_confidence_threshold",
+  "temperature": 1.0508726748943829,
+  "confidence_threshold": 0.7,
+  "accept_when": {
+    "calibrated_confidence_greater_than_or_equal_to": 0.7
+  },
+  "uncertain_when": {
+    "calibrated_confidence_less_than": 0.7
+  },
+  "uncertain_result": {
+    "status": "uncertain",
+    "inspection_advisory": "The image classification is uncertain. Inspect the plant manually and consider capturing another clear leaf image."
+  },
+  "selected_using": "validation_split",
+  "validation_operating_point": {
+    "validation_images": 2397,
+    "accepted_images": 2244,
+    "rejected_images": 153,
+    "coverage": 0.9362,
+    "accepted_accuracy": 0.9724,
+    "error_capture_rate": 0.5231
+  },
+  "limitations": [
+    "Confidence is not a guarantee that the predicted class is correct.",
+    "Some incorrect predictions can still have high confidence.",
+    "The classifier provides disease evidence and must not decide irrigation.",
+    "Predictions below the threshold require manual inspection."
+  ]
+}
