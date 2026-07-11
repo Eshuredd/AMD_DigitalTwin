@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import sys
+import types
 from io import BytesIO
 from pathlib import Path
 
@@ -315,6 +317,182 @@ def test_malformed_pt_metadata_raises_artifact_validation_error(
 
     with pytest.raises(DiseaseArtifactValidationError):
         predictor._validate_pt_artifact(artifact, metadata)
+
+
+def test_lazy_initialization_state_dict_failure_is_artifact_validation_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_dir = _fake_artifact_dir(tmp_path)
+    sensitive_message = "Missing key classifier.3.weight with incompatible shape"
+
+    class FakeClassifierLayer:
+        in_features = 576
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.classifier = [FakeClassifierLayer()]
+
+        def load_state_dict(self, state_dict: object, *, strict: bool) -> None:
+            assert strict is True
+            raise RuntimeError(sensitive_message)
+
+        def to(self, device: object) -> None:
+            raise AssertionError("device transfer should not run after load failure")
+
+        def eval(self) -> None:
+            raise AssertionError("eval should not run after load failure")
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    fake_torch.device = lambda device_name: device_name
+    fake_torch.load = lambda *args, **kwargs: _valid_pt_metadata()
+    fake_torch.nn = types.SimpleNamespace(
+        Linear=lambda input_features, output_features: object()
+    )
+
+    fake_models = types.SimpleNamespace(
+        mobilenet_v3_small=lambda *, weights: FakeModel()
+    )
+    fake_transforms = types.ModuleType("torchvision.transforms")
+    fake_transforms.InterpolationMode = types.SimpleNamespace(BILINEAR="bilinear")
+
+    fake_torchvision = types.ModuleType("torchvision")
+    fake_torchvision.models = fake_models
+    fake_torchvision.transforms = fake_transforms
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torchvision", fake_torchvision)
+    monkeypatch.setitem(sys.modules, "torchvision.transforms", fake_transforms)
+
+    predictor = TorchTomatoDiseasePredictor(
+        artifact_dir=artifact_dir,
+        device="cpu",
+    )
+
+    with pytest.raises(DiseaseArtifactValidationError) as error:
+        predictor._load()
+
+    assert type(error.value) is DiseaseArtifactValidationError
+    assert str(error.value) == "Disease model state dictionary is incompatible."
+    assert error.value.__cause__ is not None
+    assert sensitive_message not in str(error.value)
+    assert not predictor._loaded
+    assert predictor._model is None
+
+
+def test_model_construction_failure_is_model_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_dir = _fake_artifact_dir(tmp_path)
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    fake_torch.device = lambda value: value
+    fake_torch.load = lambda *args, **kwargs: _valid_pt_metadata()
+
+    fake_models = types.SimpleNamespace(
+        mobilenet_v3_small=lambda *, weights: (_ for _ in ()).throw(
+            RuntimeError("runtime unavailable")
+        )
+    )
+
+    fake_transforms = types.ModuleType("torchvision.transforms")
+    fake_transforms.InterpolationMode = types.SimpleNamespace(
+        BILINEAR="bilinear"
+    )
+
+    fake_torchvision = types.ModuleType("torchvision")
+    fake_torchvision.models = fake_models
+    fake_torchvision.transforms = fake_transforms
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torchvision", fake_torchvision)
+    monkeypatch.setitem(
+        sys.modules,
+        "torchvision.transforms",
+        fake_transforms,
+    )
+
+    predictor = TorchTomatoDiseasePredictor(
+        artifact_dir=artifact_dir,
+        device="cpu",
+    )
+
+    with pytest.raises(DiseaseModelUnavailableError) as error:
+        predictor._load()
+
+    assert type(error.value) is DiseaseModelUnavailableError
+
+
+def test_device_transfer_failure_is_model_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_dir = _fake_artifact_dir(tmp_path)
+
+    class FakeClassifierLayer:
+        in_features = 576
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.classifier = [FakeClassifierLayer()]
+
+        def load_state_dict(
+            self,
+            state_dict: object,
+            *,
+            strict: bool,
+        ) -> None:
+            assert strict is True
+
+        def to(self, device: object) -> None:
+            raise RuntimeError("device transfer failed")
+
+        def eval(self) -> None:
+            raise AssertionError("eval should not run")
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    fake_torch.device = lambda value: value
+    fake_torch.load = lambda *args, **kwargs: _valid_pt_metadata()
+    fake_torch.nn = types.SimpleNamespace(
+        Linear=lambda input_features, output_features: object()
+    )
+
+    fake_models = types.SimpleNamespace(
+        mobilenet_v3_small=lambda *, weights: FakeModel()
+    )
+
+    fake_transforms = types.ModuleType("torchvision.transforms")
+    fake_transforms.InterpolationMode = types.SimpleNamespace(
+        BILINEAR="bilinear"
+    )
+
+    fake_torchvision = types.ModuleType("torchvision")
+    fake_torchvision.models = fake_models
+    fake_torchvision.transforms = fake_transforms
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torchvision", fake_torchvision)
+    monkeypatch.setitem(
+        sys.modules,
+        "torchvision.transforms",
+        fake_transforms,
+    )
+
+    predictor = TorchTomatoDiseasePredictor(
+        artifact_dir=artifact_dir,
+        device="cpu",
+    )
+
+    with pytest.raises(DiseaseModelUnavailableError) as error:
+        predictor._load()
+
+    assert type(error.value) is DiseaseModelUnavailableError
+    assert not predictor._loaded
+    assert predictor._model is None
 
 
 def test_optional_real_artifact_cpu_smoke() -> None:
