@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 from typing import Any, Callable, NoReturn, TypeVar
 
 from fastapi import Depends, Request
@@ -26,6 +27,7 @@ from app.store_protocol import TwinStateStore
 
 _R = TypeVar("_R")
 _sqlalchemy_state_store: TwinStateStore | None = None
+logger = logging.getLogger(__name__)
 
 
 class TwinAPIException(Exception):
@@ -100,9 +102,13 @@ def _build_sqlalchemy_state_store(*, initialize_schema: bool) -> TwinStateStore:
 def initialize_state_store() -> TwinStateStore:
     global _sqlalchemy_state_store
 
-    from app.persistence.config import get_persistence_settings
+    from app.persistence.config import (
+        get_persistence_settings,
+        persistence_startup_summary,
+    )
 
     settings = get_persistence_settings()
+    logger.info(persistence_startup_summary(settings))
     if settings.normalized_state_store == "memory":
         return state_store
 

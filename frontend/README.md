@@ -4,34 +4,12 @@ This folder contains the optional Streamlit interface for the CropTwin FastAPI b
 
 ## Design
 
-The interface uses a light agriculture-and-technology dashboard style: warm off-white page background, white cards, a compact pale-sage sidebar, forest-green primary actions, and restrained terracotta accents for tomato or disease-related details.
-
-The sidebar is intentionally small: it keeps connection status visible, provides load/reset controls, and moves infrastructure options into a collapsed **Settings** expander. The active session is shown in the main page as a read-only status bar above the workflow tabs, so the sidebar does not duplicate workflow navigation.
-
-Palette:
-
-| Role | Hex |
-|---|---|
-| Page background | `#F6F7F2` |
-| Primary surface | `#FFFFFF` |
-| Secondary surface | `#EDF2EA` |
-| Sidebar background | `#E8EFE7` |
-| Primary green | `#28634A` |
-| Primary green hover | `#1F4E3A` |
-| Sage accent | `#789274` |
-| Soft sage highlight | `#DCE8D9` |
-| Muted terracotta accent | `#BC6C55` |
-| Primary text | `#1F2923` |
-| Secondary text | `#667169` |
-| Muted text | `#7D8880` |
-| Border | `#D8E1D7` |
-| Success | `#2F7A4A` |
-| Warning | `#B7791F` |
-| Error | `#B54747` |
+The interface uses a compact dark agriculture dashboard style. The sidebar keeps connection status, load/reset controls, and technical settings visible without duplicating the main workflow tabs.
 
 ## Install
 
 ```powershell
+python -m pip install -r backend/requirements.txt
 python -m pip install -r frontend/requirements.txt
 ```
 
@@ -40,8 +18,10 @@ python -m pip install -r frontend/requirements.txt
 Start the API from the repository root:
 
 ```powershell
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --app-dir backend
 ```
+
+You can also run `cd backend` first, then `uvicorn app.main:app --reload`.
 
 Start the frontend in another terminal:
 
@@ -58,11 +38,20 @@ streamlit run frontend/app.py
 
 The same base URL can also be edited in the Streamlit sidebar.
 
+In Docker, Supervisor launches Streamlit with `--server.address 0.0.0.0` and `--server.port ${PORT:-7860}`. Local Streamlit CLI runs usually use Streamlit's default port unless you pass `--server.port`.
+
+## Environment
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CROPTWIN_API_BASE_URL` | `http://127.0.0.1:8000` | FastAPI target used by the frontend HTTP client. |
+| `PORT` | `7860` in Docker fallback | Public Streamlit port used by the container supervisor and health check. |
+
 ## Workflow
 
 1. Create or load a CropTwin session.
 2. Upload a tomato leaf image for disease evidence.
-3. Enter weather and optional irrigation inputs to compute water state.
+3. Fetch Open-Meteo weather or review/edit weather values manually, then enter optional irrigation inputs to compute water state.
 4. Update the canonical twin state.
 5. Simulate candidate irrigation actions.
 6. Generate the deterministic recommendation.
@@ -72,6 +61,8 @@ The disease inference request uses a longer timeout because model loading and fi
 
 Session creation fetches elevation automatically from Open-Meteo when the elevation override is disabled. The lookup uses the latitude and longitude entered in the form; the location name is stored as a label and is not geocoded.
 
+Recent irrigation can be entered as direct depth, total litres over an irrigated area, or drip runtime with emitter details. The frontend converts farmer-friendly inputs into the backend's canonical millimetre depth.
+
 Water-state results now display observed time, CropTwin computation time, current root-zone deficit, unallocated excess water, and deficit beyond assumed total available water. The Streamlit workflow continues to submit date-only water observations unless extended by a caller, so the API marks those observations as `DATE_ONLY_UTC_START`.
 
-Farm and Plot management endpoints exist in the backend API, but this frontend remains focused on the existing session workflow.
+Farm and Plot management endpoints exist in the backend API, but this frontend remains focused on the existing session workflow. Session and history data can persist through the configured backend store; the frontend itself does not store backend state.

@@ -18,7 +18,7 @@ services:
     environment:
       POSTGRES_DB: croptwin
       POSTGRES_USER: croptwin
-      POSTGRES_PASSWORD: croptwin_dev_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before using the postgres profile}
     volumes:
       - croptwin_postgres_data:/var/lib/postgresql/data
     ports:

@@ -324,20 +324,52 @@ The frontend supports:
 
 Farm and Plot management routes are available through the API. The current Streamlit workflow remains focused on the existing session, disease, water, simulation, recommendation, narration, and records path.
 
-## Docker Persistence
+## Docker And Render Deployment
 
-The Docker image creates `/workspace/data` and defaults to:
+The Docker image creates `/workspace/data` and provides safe non-secret local defaults:
 
 ```text
+CROPTWIN_STATE_STORE=sqlalchemy
 CROPTWIN_DATABASE_URL=sqlite+pysqlite:////workspace/data/croptwin.db
+CROPTWIN_AUTO_CREATE_DB=true
+CROPTWIN_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-Mount a volume at `/workspace/data` if you want local SQLite data to survive container replacement. Render-style local filesystems may not be durable across redeployments. For deployed use, prefer PostgreSQL or another persistent storage option and do not commit database credentials.
-- raw API responses in collapsed expanders
+Runtime environment variables supplied by Docker, Compose, Render, or the operating system override those Dockerfile defaults. Supervisor launches the internal FastAPI backend and the public Streamlit frontend in one container. FastAPI remains internal at `http://127.0.0.1:8000`; Streamlit binds to `0.0.0.0` and uses `${PORT:-7860}`.
+
+For local SQLite persistence, mount a volume at `/workspace/data` if you want data to survive container replacement. Render-style service filesystems may be temporary, so SQLite-on-container is suitable only for short demonstrations.
+
+### Render Mode A: Temporary SQLite Demonstration
+
+- Service type: Web Service.
+- Runtime: Docker.
+- Dockerfile path: `./Dockerfile`.
+- Root directory: repository root.
+- Health check path: `/_stcore/health`.
+- Do not manually define `PORT` unless intentionally overriding Render's value.
+- No external database is required.
+- Data may disappear after restart, spin-down, or redeployment.
+
+### Render Mode B: Persistent PostgreSQL
+
+Set runtime environment variables in Render:
+
+```text
+CROPTWIN_STATE_STORE=sqlalchemy
+CROPTWIN_DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:PORT/DATABASE
+CROPTWIN_AUTO_CREATE_DB=false
+```
+
+Do not commit database credentials. Run migrations before application startup, or through Render's migration/pre-deploy mechanism:
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+The public service is Streamlit. The internal API target remains `http://127.0.0.1:8000`.
 
 The frontend uses `CROPTWIN_API_BASE_URL` or the Settings panel to choose the API target. The default target is `http://127.0.0.1:8000`.
-
-No screenshot files are currently stored in the repository.
 
 ## API Endpoints
 
@@ -345,6 +377,13 @@ No screenshot files are currently stored in the repository.
 |---|---|---|
 | `GET` | `/health` | Process health |
 | `GET` | `/system-info` | Model and agronomy metadata |
+| `POST` | `/farms` | Create a farm |
+| `GET` | `/farms` | List farms |
+| `GET` | `/farms/{farm_id}` | Read a farm |
+| `POST` | `/farms/{farm_id}/plots` | Create a plot under a farm |
+| `GET` | `/farms/{farm_id}/plots` | List plots under a farm |
+| `GET` | `/plots/{plot_id}` | Read a plot |
+| `POST` | `/plots/{plot_id}/crop-cycles` | Create a plot-backed crop cycle/session |
 | `POST` | `/sessions` | Create a session |
 | `GET` | `/sessions/{state_id}` | Read current session state |
 | `GET` | `/sessions/{state_id}/history` | Read twin history |
@@ -355,6 +394,8 @@ No screenshot files are currently stored in the repository.
 | `POST` | `/sessions/{state_id}/simulate-actions` | Simulate candidate actions |
 | `POST` | `/sessions/{state_id}/recommend` | Generate recommendation |
 | `POST` | `/sessions/{state_id}/narrate` | Explain recommendation |
+| `POST` | `/sessions/{state_id}/actual-actions` | Record a physical farmer action |
+| `GET` | `/sessions/{state_id}/actual-actions` | List physical farmer actions |
 
 Local API documentation:
 
@@ -367,19 +408,26 @@ Local API documentation:
 ```text
 AMD_DigitalTwin/
   backend/
+    alembic/
+    alembic.ini
     app/
       disease/
       external/
       growth_stage/
       narration/
+      persistence/
       recommendation/
       routes/
+        actions.py
+        farms.py
+        plots.py
       simulation/
       water/
       dependencies.py
       main.py
       schemas.py
       state_store.py
+      store_protocol.py
     tests/
   frontend/
     app.py
@@ -388,13 +436,15 @@ AMD_DigitalTwin/
     requirements.txt
     README.md
   docker/
+    supervisord.conf
   .streamlit/
+  docker-compose.yml
   Dockerfile
   pyproject.toml
   README.md
 ```
 
-There is no `requirements-vision.txt` in the current checkout; the vision runtime packages are listed in `requirements.txt`.
+There is no `requirements-vision.txt` in the current checkout; the vision runtime packages are listed in `backend/requirements.txt`.
 
 ## Installation
 
@@ -414,7 +464,7 @@ python -m pip install --upgrade pip
 Install backend, model runtime, and test dependencies:
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install -r backend/requirements.txt
 ```
 
 Install frontend dependencies:
@@ -423,7 +473,7 @@ Install frontend dependencies:
 python -m pip install -r frontend/requirements.txt
 ```
 
-`requirements.txt` includes `torch` and `torchvision`. Select builds compatible with the target CPU, GPU, or AMD ROCm runtime. The repository does not require a Hugging Face install step.
+`backend/requirements.txt` includes `torch` and `torchvision`. Select builds compatible with the target CPU, GPU, or AMD ROCm runtime. The repository does not require a Hugging Face install step.
 
 ## Running the Application
 
@@ -433,8 +483,10 @@ Terminal 1: start FastAPI.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --app-dir backend
 ```
+
+You can also run `cd backend` first, then `uvicorn app.main:app --reload`.
 
 Terminal 2: start Streamlit.
 
@@ -480,64 +532,63 @@ For full request and response schemas, use Swagger or ReDoc.
 
 | Variable | Default | Used by | Purpose |
 |---|---|---|---|
-| `CROPTWIN_DISEASE_ARTIFACT_DIR` | `model_artifacts/croptwin_disease` | Backend | Overrides the disease artifact directory for inference and `/system-info`. |
-| `CROPTWIN_API_BASE_URL` | `http://127.0.0.1:8000` | Frontend | Sets the FastAPI target for the Streamlit HTTP client. |
+| `CROPTWIN_DATABASE_URL` | `sqlite+pysqlite:///./data/croptwin.db` locally; `sqlite+pysqlite:////workspace/data/croptwin.db` in Docker | Backend, Docker, deployment | Selects SQLite or PostgreSQL persistence. |
+| `CROPTWIN_STATE_STORE` | `sqlalchemy` | Backend, Docker, deployment | Selects `sqlalchemy` or explicit `memory` store. |
+| `CROPTWIN_AUTO_CREATE_DB` | `true` | Backend, Docker, deployment | Allows local MVP table creation; use `false` with PostgreSQL migrations. |
+| `PORT` | `7860` Docker fallback | Docker, deployment | Public Streamlit port used by Supervisor and Docker health check. |
+| `CROPTWIN_API_BASE_URL` | `http://127.0.0.1:8000` | Frontend, Docker | Sets the FastAPI target for the Streamlit HTTP client. |
+| `CROPTWIN_DISEASE_ARTIFACT_DIR` | `model_artifacts/croptwin_disease` locally; `/workspace/backend/model_artifacts/croptwin_disease` in Docker | Backend, Docker | Overrides the disease artifact directory for inference and `/system-info`. |
 
-`.env.example` currently documents `CROPTWIN_API_BASE_URL`.
+Configuration precedence is: application defaults, Dockerfile non-secret defaults, runtime environment variables, then inherited Supervisor child-process environment. Supervisor does not hard-code database settings.
 
 ## Testing
 
 Run the complete test suite:
 
 ```powershell
-python -m pytest -v
+PYTHONPATH=backend python -m pytest -v backend/tests
 ```
 
 Focused commands:
 
 ```powershell
-python -m pytest -v tests/test_disease_model.py
-python -m pytest -v tests/test_routes/test_disease.py
-python -m pytest -v tests/test_frontend_api_client.py
-python -m pytest -v tests/test_frontend_ui_helpers.py
+PYTHONPATH=backend python -m pytest -v backend/tests/test_disease_model.py
+PYTHONPATH=backend python -m pytest -v backend/tests/test_routes/test_disease.py
+PYTHONPATH=backend python -m pytest -v backend/tests/test_frontend_api_client.py
+PYTHONPATH=backend python -m pytest -v backend/tests/test_frontend_ui_helpers.py
 ```
 
 Current local verification:
 
 | Command | Result |
 |---|---|
-| `python -m pytest -v` | `130 passed in 4.42s` |
-| `python -m pytest -v tests/test_frontend_api_client.py` | `10 passed in 0.11s` |
-| `python -m pytest -v tests/test_frontend_ui_helpers.py` | `11 passed in 0.04s` |
+| `PYTHONPATH=backend python3 -m pytest -v backend/tests` | `197 passed, 1 skipped in 0.72s` |
 
-The full suite includes API workflow tests, route tests, disease artifact validation, image validation, uncertainty policy tests, ETo tests, and frontend HTTP/helper tests. Some route tests use dependency overrides; the optional real artifact smoke test runs when the local runtime can execute it.
+The full suite includes API workflow tests, route tests, persistence store-contract tests, deployment configuration tests, disease artifact validation, image validation, uncertainty policy tests, ETo/Open-Meteo tests, water-balance tests, and frontend HTTP/helper tests. Some route tests use dependency overrides; the optional real artifact smoke test runs when the local runtime can execute it.
 
 ## Current Limitations
 
-- State is stored in memory and is lost when the backend process restarts.
-- No persistent database is implemented.
 - No authentication or multi-user isolation is implemented.
 - Open-Meteo weather retrieval is available with manual overrides; the data is model-derived and is not equivalent to an on-farm weather station.
 - No on-farm weather-station or soil-moisture-sensor integration is implemented.
+- No automatic hourly or daily twin advancement is implemented.
 - Real irrigation amounts still require farmer, controller, or sensor information.
 - PlantVillage images have controlled backgrounds and do not prove real-field performance.
 - Unrelated or out-of-distribution images may still produce predictions.
+- Out-of-distribution and non-tomato rejection are not implemented.
 - Confidence thresholds were selected from the current validation split.
-- No public production deployment is included.
+- Docker packaging is implemented, but no public production URL has been verified.
 - No field validation is included.
 - No treatment recommendation engine is included.
 - Local development servers are not production hosting.
 
 ## Future Improvements
 
-- SQLite or PostgreSQL persistence.
 - Authentication and user/session separation.
 - On-farm weather-station and soil-moisture-sensor integration.
 - Real-field tomato-leaf dataset evaluation.
 - Out-of-distribution and non-tomato image rejection.
 - Model monitoring and recalibration workflow.
-- Deployment packaging.
-- Dockerization.
 - Structured logs and observability.
 - CI.
 - Production serving.
