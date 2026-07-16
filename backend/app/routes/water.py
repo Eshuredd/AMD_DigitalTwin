@@ -8,7 +8,7 @@ and does not simulate, recommend, or narrate.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 
@@ -21,12 +21,15 @@ from app.external.weather_client import WeatherClientError, fetch_daily_weather
 from app.growth_stage.resolver import resolve_growth_stage
 from app.schemas import (
     ComputeWaterStateRequest,
+    LastIrrigationEvent,
+    ObservationTimeBasis,
     StateIdRequest,
     UpdateTwinStateResponse,
     WeatherSnapshotResponse,
     WaterStateResponse,
 )
-from app.state_store import InMemoryTwinStateStore
+from app.state_store import with_irrigation_event_id
+from app.store_protocol import TwinStateStore
 from app.water.water_balance import (
     compute_water_state as compute_water_state_domain,
 )
@@ -123,7 +126,7 @@ def _validate_session_elevation(elevation_m: float | None) -> float:
 async def get_weather_snapshot_route(
     state_id: str,
     target_date: str = Query(...),
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> WeatherSnapshotResponse:
     _validate_weather_state_id(state_id)
     parsed_target_date = _parse_weather_target_date(target_date)
@@ -168,7 +171,7 @@ async def get_weather_snapshot_route(
 def compute_water_state_route(
     state_id: str,
     request: ComputeWaterStateRequest,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> WaterStateResponse:
     _validate_state_id(state_id)
     _validate_matching_state_id(
@@ -185,22 +188,43 @@ def compute_water_state_route(
     elevation_m = _validate_session_elevation(record.location.elevation_m)
 
     previous_current_state = record.current_state
-    last_irrigation_event = request.last_irrigation_event
-
-    if last_irrigation_event is None:
-        irrigation_event_for_update = None
-    elif previous_current_state is None:
-        irrigation_event_for_update = last_irrigation_event
-    elif last_irrigation_event.timestamp > previous_current_state.last_update_time:
-        irrigation_event_for_update = last_irrigation_event
-    else:
-        irrigation_event_for_update = None
+    irrigation_event_for_update: LastIrrigationEvent | None = None
+    if request.last_irrigation_event is not None:
+        candidate_event = with_irrigation_event_id(
+            state_id,
+            request.last_irrigation_event,
+        )
+        event_id = candidate_event.irrigation_event_id
+        if event_id is None:
+            raise TwinAPIException(
+                status_code=422,
+                code=INVALID_WATER_STATE_REQUEST_CODE,
+                message="Invalid water state request.",
+                details={"reason": "irrigation_event_id could not be resolved."},
+            )
+        already_applied = call_store_or_raise(
+            store.has_applied_irrigation_event,
+            state_id,
+            event_id,
+        )
+        if not already_applied:
+            irrigation_event_for_update = candidate_event
 
     previous_root_zone_depletion_mm = (
         None
         if previous_current_state is None
         else previous_current_state.root_zone_depletion
     )
+    if request.observed_at is None:
+        observed_at = datetime.combine(
+            request.current_date,
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
+        observation_time_basis = ObservationTimeBasis.DATE_ONLY_UTC_START
+    else:
+        observed_at = request.observed_at
+        observation_time_basis = ObservationTimeBasis.EXPLICIT
 
     try:
         growth_state = resolve_growth_stage(
@@ -221,6 +245,8 @@ def compute_water_state_route(
             elevation_m=elevation_m,
             last_irrigation_event=irrigation_event_for_update,
             previous_root_zone_depletion_mm=previous_root_zone_depletion_mm,
+            observed_at=observed_at,
+            observation_time_basis=observation_time_basis,
         )
     except ValueError as exc:
         raise TwinAPIException(
@@ -240,6 +266,9 @@ def compute_water_state_route(
         store.cache_water_state,
         state_id=state_id,
         water_state=water_state,
+        weather_payload=request.weather.model_dump(mode="json"),
+        previous_root_zone_depletion_mm=previous_root_zone_depletion_mm,
+        irrigation_event=irrigation_event_for_update,
     )
 
 
@@ -250,7 +279,7 @@ def compute_water_state_route(
 def update_twin_state_route(
     state_id: str,
     request: StateIdRequest,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> UpdateTwinStateResponse:
     _validate_state_id(state_id)
     _validate_matching_state_id(

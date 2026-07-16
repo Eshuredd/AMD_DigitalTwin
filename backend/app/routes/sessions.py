@@ -9,13 +9,13 @@ from app.schemas import (
     SessionResponse,
     SessionStateResponse,
 )
-from app.state_store import InMemoryTwinStateStore
 from app.dependencies import (
     TwinAPIException,
     call_store_or_raise,
     get_state_store,
 )
 from app.external.elevation_client import fetch_elevation_m
+from app.store_protocol import TwinStateStore
 
 
 INVALID_LOCATION_CODE = "INVALID_LOCATION"
@@ -67,7 +67,7 @@ async def _resolve_elevation_m(request: CreateSessionRequest) -> float:
 @router.post("/sessions", response_model=SessionResponse)
 async def create_session(
     request: CreateSessionRequest,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> SessionResponse:
     try:
         elevation_m = await _resolve_elevation_m(request)
@@ -99,7 +99,7 @@ async def create_session(
 @router.get("/sessions/{state_id}", response_model=SessionStateResponse)
 async def get_session_state(
     state_id: str,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> SessionStateResponse:
     return call_store_or_raise(
         store.get_session_state_response,
@@ -110,7 +110,7 @@ async def get_session_state(
 @router.get("/sessions/{state_id}/history", response_model=SessionHistoryResponse)
 async def get_session_history(
     state_id: str,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> SessionHistoryResponse:
     return call_store_or_raise(
         store.get_history_response,

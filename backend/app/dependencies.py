@@ -15,15 +15,17 @@ from app.schemas import (
     TwinCurrentState,
 )
 from app.state_store import (
-    InMemoryTwinStateStore,
+    DuplicateIrrigationEventApplicationError,
     IncompleteStateError,
     MissingCachedOutputError,
     StateNotFoundError,
     TwinSessionRecord,
     state_store,
 )
+from app.store_protocol import TwinStateStore
 
 _R = TypeVar("_R")
+_sqlalchemy_state_store: TwinStateStore | None = None
 
 
 class TwinAPIException(Exception):
@@ -83,8 +85,56 @@ def raise_api_error(
     )
 
 
-def get_state_store() -> InMemoryTwinStateStore:
-    return state_store
+def _build_sqlalchemy_state_store(*, initialize_schema: bool) -> TwinStateStore:
+    from app.persistence.config import get_persistence_settings
+    from app.persistence.sqlalchemy_store import SQLAlchemyTwinStateStore
+
+    settings = get_persistence_settings()
+    store = SQLAlchemyTwinStateStore(
+        database_url=settings.database_url,
+        auto_create=initialize_schema and settings.auto_create_db,
+    )
+    return store
+
+
+def initialize_state_store() -> TwinStateStore:
+    global _sqlalchemy_state_store
+
+    from app.persistence.config import get_persistence_settings
+
+    settings = get_persistence_settings()
+    if settings.normalized_state_store == "memory":
+        return state_store
+
+    if _sqlalchemy_state_store is None:
+        _sqlalchemy_state_store = _build_sqlalchemy_state_store(
+            initialize_schema=True,
+        )
+    else:
+        from app.persistence.sqlalchemy_store import SQLAlchemyTwinStateStore
+
+        if settings.auto_create_db and isinstance(
+            _sqlalchemy_state_store,
+            SQLAlchemyTwinStateStore,
+        ):
+            _sqlalchemy_state_store.create_schema()
+    return _sqlalchemy_state_store
+
+
+def get_state_store() -> TwinStateStore:
+    global _sqlalchemy_state_store
+
+    from app.persistence.config import get_persistence_settings
+
+    settings = get_persistence_settings()
+    if settings.normalized_state_store == "memory":
+        return state_store
+
+    if _sqlalchemy_state_store is None:
+        _sqlalchemy_state_store = _build_sqlalchemy_state_store(
+            initialize_schema=False,
+        )
+    return _sqlalchemy_state_store
 
 
 @lru_cache(maxsize=1)
@@ -117,6 +167,14 @@ def raise_from_store_error(exc: Exception) -> NoReturn:
             details={},
         )
 
+    if isinstance(exc, DuplicateIrrigationEventApplicationError):
+        raise_api_error(
+            status_code=409,
+            code="IRRIGATION_EVENT_ALREADY_APPLIED",
+            message=str(exc),
+            details={"irrigation_event_id": exc.irrigation_event_id},
+        )
+
     if isinstance(exc, ValueError):
         raise_api_error(
             status_code=422,
@@ -141,27 +199,27 @@ def call_store_or_raise(
 
 def get_twin_record(
     state_id: str,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> TwinSessionRecord:
     return call_store_or_raise(store.get_record, state_id)
 
 
 def get_twin_current_state(
     state_id: str,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> TwinCurrentState:
     return call_store_or_raise(store.get_current_state, state_id)
 
 
 def get_twin_latest_simulation(
     state_id: str,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> SimulateActionsResponse:
     return call_store_or_raise(store.get_latest_simulation, state_id)
 
 
 def get_twin_latest_recommendation(
     state_id: str,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> RecommendationResponse:
     return call_store_or_raise(store.get_latest_recommendation, state_id)

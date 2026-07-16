@@ -70,6 +70,31 @@ class CropTwinAPIClient:
     def create_session(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/sessions", json=payload)
 
+    def create_farm(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/farms", json=payload)
+
+    def list_farms(self) -> dict[str, Any]:
+        return {"farms": self._request_list("GET", "/farms")}
+
+    def get_farm(self, farm_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/farms/{farm_id}")
+
+    def create_plot(self, farm_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"/farms/{farm_id}/plots", json=payload)
+
+    def list_plots(self, farm_id: str) -> dict[str, Any]:
+        return {"plots": self._request_list("GET", f"/farms/{farm_id}/plots")}
+
+    def get_plot(self, plot_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/plots/{plot_id}")
+
+    def create_crop_cycle_for_plot(
+        self,
+        plot_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request("POST", f"/plots/{plot_id}/crop-cycles", json=payload)
+
     def get_session(self, state_id: str) -> dict[str, Any]:
         return self._request("GET", f"/sessions/{state_id}")
 
@@ -142,6 +167,26 @@ class CropTwinAPIClient:
     def narrate(self, state_id: str) -> dict[str, Any]:
         return self._request("POST", f"/sessions/{state_id}/narrate")
 
+    def record_actual_action(
+        self,
+        state_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/sessions/{state_id}/actual-actions",
+            json=payload,
+        )
+
+    def list_actual_actions(self, state_id: str, *, limit: int = 50) -> dict[str, Any]:
+        return {
+            "actual_actions": self._request_list(
+                "GET",
+                f"/sessions/{state_id}/actual-actions",
+                params={"limit": limit},
+            )
+        }
+
     def _request(
         self,
         method: str,
@@ -193,6 +238,59 @@ class CropTwinAPIClient:
             ) from exc
 
         if not isinstance(parsed, dict):
+            raise CropTwinAPIError(
+                "The CropTwin API returned an unexpected response shape.",
+                status_code=response.status_code,
+                code="UNEXPECTED_RESPONSE",
+                details={"response_type": type(parsed).__name__},
+            )
+        return parsed
+
+    def _request_list(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        try:
+            response = self._client.request(
+                method,
+                path,
+                params=params,
+                timeout=self._timeout,
+            )
+        except httpx.TimeoutException as exc:
+            raise CropTwinAPIError(
+                "The CropTwin API request timed out.",
+                code="REQUEST_TIMEOUT",
+                details=_redact_sensitive({"params": params}),
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise CropTwinAPIError(
+                "Could not connect to the CropTwin API.",
+                code="CONNECTION_ERROR",
+                details=_redact_sensitive({"params": params}),
+            ) from exc
+        except httpx.RequestError as exc:
+            raise CropTwinAPIError(
+                "The CropTwin API request failed.",
+                code="REQUEST_ERROR",
+                details=_redact_sensitive({"error": str(exc), "params": params}),
+            ) from exc
+
+        if response.status_code >= 400:
+            self._raise_for_error_response(response)
+
+        try:
+            parsed = response.json()
+        except ValueError as exc:
+            raise CropTwinAPIError(
+                "The CropTwin API returned a non-JSON response.",
+                status_code=response.status_code,
+                code="NON_JSON_RESPONSE",
+            ) from exc
+        if not isinstance(parsed, list):
             raise CropTwinAPIError(
                 "The CropTwin API returned an unexpected response shape.",
                 status_code=response.status_code,

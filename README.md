@@ -16,7 +16,7 @@ CropTwin does not treat model output as a confirmed diagnosis, and it does not r
 | Temperature calibration | Implemented |
 | Streamlit frontend | Implemented |
 | Automated tests | Implemented |
-| Persistent database | Not yet implemented |
+| Persistent database | Implemented |
 | Public deployment | Not yet implemented |
 
 ## Key Capabilities
@@ -48,23 +48,35 @@ CropTwin separates those responsibilities. Physical and agronomic calculations a
 ```mermaid
 flowchart TD
     UI[Streamlit frontend] --> API[FastAPI routes]
-    API --> STORE[In-memory session state store]
+    API --> STORE[TwinStateStore protocol]
+    STORE --> SQL[SQLAlchemy persistent store]
+    STORE --> MEM[In-memory test/dev store]
+    SQL --> FARM[Farm]
+    FARM --> PLOT[Plot]
+    PLOT --> CYCLE[Crop Cycle / Session]
+    CYCLE --> OBS[Observations]
+    OBS --> SNAP[Immutable Twin State Snapshots]
+    SNAP --> SIM[Simulations]
+    SIM --> REC[Recommendations]
+    CYCLE --> ACTUAL[Actual Actions]
     API --> DISEASE[Disease predictor]
     DISEASE --> MODEL[MobileNetV3-Small artifact]
     DISEASE --> TEMP[Temperature scaling]
     DISEASE --> UNC[Uncertainty policy]
     API --> GROWTH[Growth stage resolver]
     API --> WATER[ETo and water balance]
-    GROWTH --> TWIN[Current digital twin state]
-    WATER --> TWIN
+    GROWTH --> OBS
+    WATER --> OBS
     DISEASE --> EVIDENCE[Disease evidence only]
-    EVIDENCE --> TWIN
-    TWIN --> SIM[Action simulator]
+    EVIDENCE --> OBS
+    OBS --> SNAP
+    SNAP --> SIM
     SIM --> REC[Deterministic recommendation engine]
     REC --> NARR[Narration layer]
 
     EVIDENCE -. supporting evidence .-> REC
     SIM == recommendation authority ==> REC
+    REC -. optional relation .-> ACTUAL
 ```
 
 The disease model does not compute water balance, run simulations, or choose the irrigation action. The narrator explains a cached recommendation; it does not recompute water balance, rerun simulation, or override the deterministic recommendation.
@@ -104,8 +116,38 @@ Supported simulation actions:
 | Frontend | Streamlit |
 | HTTP client | httpx |
 | Testing | pytest |
-| State storage | In-memory state store |
+| State storage | SQLAlchemy persistent store, optional in-memory store |
 | Recorded training/runtime context | AMD ROCm PyTorch environment |
+
+## Persistence
+
+CropTwin now persists state through SQLAlchemy. SQLite is the default development database:
+
+```text
+CROPTWIN_STATE_STORE=sqlalchemy
+CROPTWIN_DATABASE_URL=sqlite+pysqlite:///./data/croptwin.db
+CROPTWIN_AUTO_CREATE_DB=true
+```
+
+`CROPTWIN_STATE_STORE=memory` preserves the original isolated in-memory store for tests and explicit development use.
+
+PostgreSQL is supported by setting `CROPTWIN_DATABASE_URL`, for example:
+
+```text
+CROPTWIN_DATABASE_URL=postgresql+psycopg://user:password@host:5432/croptwin
+```
+
+From `backend/`, run production-style migrations with:
+
+```bash
+alembic upgrade head
+```
+
+For the local/Docker MVP, automatic table creation is enabled by default with `CROPTWIN_AUTO_CREATE_DB=true`. Production PostgreSQL should use Alembic migrations instead of relying on metadata auto-create.
+
+Persistent entities include Farm, Plot, Crop Cycle / Session, disease observations, growth observations, water observations, immutable twin-state snapshots, simulation runs, recommendation runs, irrigation events, and actual actions. Standalone `POST /sessions` remains supported and does not create fake Farm or Plot records. Plot-created crop cycles copy plot location, elevation, and soil texture into the crop-cycle snapshot so historical sessions do not change when plot metadata changes.
+
+Actual actions record what physically happened. They remain separate from recommendations and do not automatically modify water state in this task.
 
 The disease model is a locally stored Torchvision/PyTorch artifact. CropTwin does not use Hugging Face and does not download model weights at runtime.
 
@@ -218,11 +260,32 @@ Implemented assumptions and calculations include:
 - Total available water (TAW).
 - Readily available water threshold using `p_allowable = 0.50`.
 - Root-zone depletion update from ETc, rainfall, and a non-duplicated irrigation event.
+- Explicit root-zone water surplus accounting.
+- Deficit beyond total available water accounting.
 - Moisture-state and stress-band classification.
 - 24-hour candidate action simulation.
 - Deterministic recommendation selection from current state and cached simulation.
 
 Disease evidence can add caution reasons, inspection advisory, or irrigation constraints such as avoiding overhead irrigation for stronger fungal wetness risk. It does not override the water engine.
+
+### Observation Time Policy
+
+`observed_at` is when the physical/source condition applies. `computed_at` is when CropTwin processed the record. `last_update_time` remains only as a backward-compatible alias of twin-snapshot `computed_at`; it is not physical observation time.
+
+For existing water requests that provide only `current_date`, CropTwin uses `00:00 UTC` on that date and marks `observation_time_basis=DATE_ONLY_UTC_START`. Explicit `observed_at` values must be timezone-aware and are normalized to UTC. Disease predictions without capture metadata use the server receipt/prediction timestamp with `observation_time_basis=SERVER_RECEIVED`.
+
+### Water Surplus Accounting
+
+The deterministic bucket update is:
+
+```text
+raw_depletion = previous_root_zone_depletion + ETc - rainfall - irrigation
+root_zone_depletion_mm = clamp(raw_depletion, 0, TAW)
+water_surplus_mm = max(0, -raw_depletion)
+depletion_beyond_taw_mm = max(0, raw_depletion - TAW)
+```
+
+`water_surplus_mm` is water input beyond what was required to refill the simplified root-zone bucket. CropTwin does not yet divide that surplus into runoff, deep drainage, or temporary storage, and it is not carried forward as stored plant-available water. No sensor synchronization, automatic daily/hourly advancement, controller integration, or detailed runoff/drainage model is implemented yet.
 
 ## Weather and Irrigation Inputs
 
@@ -258,6 +321,18 @@ The frontend supports:
 - deterministic recommendation display
 - narration
 - current state and history refresh
+
+Farm and Plot management routes are available through the API. The current Streamlit workflow remains focused on the existing session, disease, water, simulation, recommendation, narration, and records path.
+
+## Docker Persistence
+
+The Docker image creates `/workspace/data` and defaults to:
+
+```text
+CROPTWIN_DATABASE_URL=sqlite+pysqlite:////workspace/data/croptwin.db
+```
+
+Mount a volume at `/workspace/data` if you want local SQLite data to survive container replacement. Render-style local filesystems may not be durable across redeployments. For deployed use, prefer PostgreSQL or another persistent storage option and do not commit database credentials.
 - raw API responses in collapsed expanders
 
 The frontend uses `CROPTWIN_API_BASE_URL` or the Settings panel to choose the API target. The default target is `http://127.0.0.1:8000`.

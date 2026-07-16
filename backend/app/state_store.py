@@ -3,14 +3,23 @@ from __future__ import annotations
 import threading
 import uuid
 from datetime import date, datetime, timezone
+import hashlib
 
 from pydantic import BaseModel, Field
 
 from app.schemas import (
+    ActualActionCreateRequest,
+    ActualActionResponse,
     CreateSessionRequest,
+    CreateCropCycleRequest,
     DiseasePredictionResponse,
+    FarmCreateRequest,
+    FarmResponse,
     GrowthStageResponse,
+    LastIrrigationEvent,
     Location,
+    PlotCreateRequest,
+    PlotResponse,
     RecommendationResponse,
     SessionHistoryResponse,
     SessionResponse,
@@ -44,13 +53,23 @@ class MissingCachedOutputError(Exception):
         self.output_name = output_name
 
 
+class DuplicateIrrigationEventApplicationError(Exception):
+    def __init__(self, irrigation_event_id: str) -> None:
+        super().__init__(
+            f"Irrigation event '{irrigation_event_id}' has already been applied."
+        )
+        self.irrigation_event_id = irrigation_event_id
+
+
 class TwinSessionRecord(BaseModel):
     state_id: str
+    plot_id: str | None = None
     crop_type: CropType
     planting_date: date
     location: Location
     soil_texture: SoilTexture
     created_at: datetime
+    status: str = "active"
     latest_disease_state: DiseasePredictionResponse | None = None
     latest_growth_state: GrowthStageResponse | None = None
     latest_water_state: WaterStateResponse | None = None
@@ -60,9 +79,56 @@ class TwinSessionRecord(BaseModel):
     latest_recommendation: RecommendationResponse | None = None
 
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def ensure_utc_datetime(value: datetime, *, field_name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware.")
+    return value.astimezone(timezone.utc)
+
+
+def derive_irrigation_event_id(
+    *,
+    state_id: str,
+    timestamp: datetime,
+    amount_mm: float,
+) -> str:
+    timestamp_utc = ensure_utc_datetime(
+        timestamp,
+        field_name="last_irrigation_event.timestamp",
+    )
+    normalized_amount = f"{float(amount_mm):.6f}"
+    source = f"{state_id}|{timestamp_utc.isoformat()}|{normalized_amount}"
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:32]
+    return f"irrigation_{digest}"
+
+
+def with_irrigation_event_id(
+    state_id: str,
+    event: LastIrrigationEvent,
+) -> LastIrrigationEvent:
+    if not isinstance(event, LastIrrigationEvent):
+        raise ValueError("last_irrigation_event must be a LastIrrigationEvent.")
+    irrigation_event_id = event.irrigation_event_id or derive_irrigation_event_id(
+        state_id=state_id,
+        timestamp=event.timestamp,
+        amount_mm=event.amount_mm,
+    )
+    return event.model_copy(update={"irrigation_event_id": irrigation_event_id})
+
+
 class InMemoryTwinStateStore:
     def __init__(self, max_history: int = 10) -> None:
         self._sessions: dict[str, TwinSessionRecord] = {}
+        self._farms: dict[str, FarmResponse] = {}
+        self._plots: dict[str, PlotResponse] = {}
+        self._actual_actions: dict[str, list[ActualActionResponse]] = {}
+        self._applied_irrigation_event_ids: set[str] = set()
+        self._disease_history: dict[str, list[DiseasePredictionResponse]] = {}
+        self._growth_history: dict[str, list[GrowthStageResponse]] = {}
+        self._water_history: dict[str, list[WaterStateResponse]] = {}
         self._max_history = max_history
         self._lock = threading.RLock()
 
@@ -83,8 +149,12 @@ class InMemoryTwinStateStore:
         with self._lock:
             if state_id is None:
                 state_id = f"state_{uuid.uuid4().hex}"
+            if state_id in self._sessions:
+                raise ValueError(f"State '{state_id}' already exists.")
             if created_at is None:
-                created_at = datetime.now(timezone.utc)
+                created_at = utc_now()
+            else:
+                created_at = ensure_utc_datetime(created_at, field_name="created_at")
             location = request.location.model_copy(deep=True)
             if elevation_m is not None:
                 location.elevation_m = elevation_m
@@ -122,6 +192,9 @@ class InMemoryTwinStateStore:
             if disease_state.state_id != state_id:
                 raise ValueError("disease_state.state_id does not match state_id.")
             record.latest_disease_state = disease_state.model_copy(deep=True)
+            self._disease_history.setdefault(state_id, []).append(
+                record.latest_disease_state.model_copy(deep=True)
+            )
             return record.latest_disease_state.model_copy(deep=True)
 
     def cache_growth_state(
@@ -132,16 +205,36 @@ class InMemoryTwinStateStore:
             if growth_state.state_id != state_id:
                 raise ValueError("growth_state.state_id does not match state_id.")
             record.latest_growth_state = growth_state.model_copy(deep=True)
+            self._growth_history.setdefault(state_id, []).append(
+                record.latest_growth_state.model_copy(deep=True)
+            )
             return record.latest_growth_state.model_copy(deep=True)
 
     def cache_water_state(
-        self, state_id: str, water_state: WaterStateResponse
+        self,
+        state_id: str,
+        water_state: WaterStateResponse,
+        *,
+        weather_payload: dict[str, object] | None = None,
+        previous_root_zone_depletion_mm: float | None = None,
+        irrigation_event: LastIrrigationEvent | None = None,
     ) -> WaterStateResponse:
         with self._lock:
             record = self._get_record_unlocked(state_id)
             if water_state.state_id != state_id:
                 raise ValueError("water_state.state_id does not match state_id.")
+            if irrigation_event is not None:
+                normalized_event = with_irrigation_event_id(state_id, irrigation_event)
+                event_id = normalized_event.irrigation_event_id
+                if event_id is None:
+                    raise ValueError("irrigation_event_id is required.")
+                if event_id in self._applied_irrigation_event_ids:
+                    raise DuplicateIrrigationEventApplicationError(event_id)
+                self._applied_irrigation_event_ids.add(event_id)
             record.latest_water_state = water_state.model_copy(deep=True)
+            self._water_history.setdefault(state_id, []).append(
+                record.latest_water_state.model_copy(deep=True)
+            )
             return record.latest_water_state.model_copy(deep=True)
 
     def cache_simulation(
@@ -151,6 +244,8 @@ class InMemoryTwinStateStore:
             record = self._get_record_unlocked(state_id)
             if simulation.state_id != state_id:
                 raise ValueError("simulation.state_id does not match state_id.")
+            if record.current_state is None:
+                raise MissingCachedOutputError(state_id, "current_state")
             record.latest_simulation = simulation.model_copy(deep=True)
             record.latest_recommendation = None
             return record.latest_simulation.model_copy(deep=True)
@@ -162,6 +257,8 @@ class InMemoryTwinStateStore:
             record = self._get_record_unlocked(state_id)
             if recommendation.state_id != state_id:
                 raise ValueError("recommendation.state_id does not match state_id.")
+            if record.latest_simulation is None:
+                raise MissingCachedOutputError(state_id, "latest_simulation")
             record.latest_recommendation = recommendation.model_copy(deep=True)
             return record.latest_recommendation.model_copy(deep=True)
 
@@ -182,7 +279,7 @@ class InMemoryTwinStateStore:
             growth = record.latest_growth_state
             water = record.latest_water_state
 
-            now = datetime.now(timezone.utc)
+            now = utc_now()
             current_state = TwinCurrentState(
                 crop_type=record.crop_type,
                 growth_stage=growth.growth_stage,
@@ -198,9 +295,16 @@ class InMemoryTwinStateStore:
                 etc=water.etc,
                 taw=water.taw,
                 raw_threshold=water.raw_threshold,
+                raw_root_zone_depletion_mm=water.raw_root_zone_depletion_mm,
+                root_zone_depletion_mm=water.root_zone_depletion_mm,
                 root_zone_depletion=water.root_zone_depletion,
+                water_surplus_mm=water.water_surplus_mm,
+                depletion_beyond_taw_mm=water.depletion_beyond_taw_mm,
                 estimated_moisture_state=water.estimated_moisture_state,
                 stress_band=water.stress_band,
+                observed_at=water.observed_at,
+                computed_at=now,
+                observation_time_basis=water.observation_time_basis,
                 last_update_time=now,
             )
             record.current_state = current_state.model_copy(deep=True)
@@ -263,9 +367,205 @@ class InMemoryTwinStateStore:
             history = [event.model_copy(deep=True) for event in record.state_history]
             return SessionHistoryResponse(state_id=state_id, history=history)
 
+    def create_farm(
+        self,
+        request: FarmCreateRequest,
+        *,
+        farm_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> FarmResponse:
+        with self._lock:
+            farm_id = farm_id or f"farm_{uuid.uuid4().hex}"
+            if farm_id in self._farms:
+                raise ValueError(f"Farm '{farm_id}' already exists.")
+            timestamp = (
+                utc_now()
+                if created_at is None
+                else ensure_utc_datetime(created_at, field_name="created_at")
+            )
+            farm = FarmResponse(
+                farm_id=farm_id,
+                name=request.name,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            self._farms[farm_id] = farm
+            return farm.model_copy(deep=True)
+
+    def list_farms(self) -> list[FarmResponse]:
+        with self._lock:
+            return [
+                farm.model_copy(deep=True)
+                for farm in sorted(self._farms.values(), key=lambda item: item.created_at)
+            ]
+
+    def get_farm(self, farm_id: str) -> FarmResponse:
+        with self._lock:
+            farm = self._farms.get(farm_id)
+            if farm is None:
+                raise StateNotFoundError(farm_id)
+            return farm.model_copy(deep=True)
+
+    def create_plot(
+        self,
+        farm_id: str,
+        request: PlotCreateRequest,
+        *,
+        plot_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> PlotResponse:
+        with self._lock:
+            if farm_id not in self._farms:
+                raise StateNotFoundError(farm_id)
+            plot_id = plot_id or f"plot_{uuid.uuid4().hex}"
+            if plot_id in self._plots:
+                raise ValueError(f"Plot '{plot_id}' already exists.")
+            timestamp = (
+                utc_now()
+                if created_at is None
+                else ensure_utc_datetime(created_at, field_name="created_at")
+            )
+            plot = PlotResponse(
+                plot_id=plot_id,
+                farm_id=farm_id,
+                name=request.name,
+                location=request.location.model_copy(deep=True),
+                soil_texture=request.soil_texture,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            self._plots[plot_id] = plot
+            return plot.model_copy(deep=True)
+
+    def list_plots(self, farm_id: str) -> list[PlotResponse]:
+        with self._lock:
+            if farm_id not in self._farms:
+                raise StateNotFoundError(farm_id)
+            plots = [
+                plot
+                for plot in self._plots.values()
+                if plot.farm_id == farm_id
+            ]
+            return [
+                plot.model_copy(deep=True)
+                for plot in sorted(plots, key=lambda item: item.created_at)
+            ]
+
+    def get_plot(self, plot_id: str) -> PlotResponse:
+        with self._lock:
+            plot = self._plots.get(plot_id)
+            if plot is None:
+                raise StateNotFoundError(plot_id)
+            return plot.model_copy(deep=True)
+
+    def create_crop_cycle_for_plot(
+        self,
+        plot_id: str,
+        request: CreateCropCycleRequest,
+        *,
+        state_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> SessionResponse:
+        with self._lock:
+            plot = self._plots.get(plot_id)
+            if plot is None:
+                raise StateNotFoundError(plot_id)
+            state_id = state_id or f"state_{uuid.uuid4().hex}"
+            if state_id in self._sessions:
+                raise ValueError(f"State '{state_id}' already exists.")
+            timestamp = (
+                utc_now()
+                if created_at is None
+                else ensure_utc_datetime(created_at, field_name="created_at")
+            )
+            record = TwinSessionRecord(
+                state_id=state_id,
+                plot_id=plot_id,
+                crop_type=request.crop_type,
+                planting_date=request.planting_date,
+                location=plot.location.model_copy(deep=True),
+                soil_texture=plot.soil_texture,
+                created_at=timestamp,
+            )
+            self._sessions[state_id] = record
+            return SessionResponse(
+                state_id=record.state_id,
+                crop_type=record.crop_type,
+                planting_date=record.planting_date,
+                location=record.location.model_copy(deep=True),
+                soil_texture=record.soil_texture,
+                created_at=record.created_at,
+            )
+
+    def has_applied_irrigation_event(
+        self,
+        state_id: str,
+        irrigation_event_id: str,
+    ) -> bool:
+        with self._lock:
+            self._get_record_unlocked(state_id)
+            return irrigation_event_id in self._applied_irrigation_event_ids
+
+    def record_actual_action(
+        self,
+        state_id: str,
+        request: ActualActionCreateRequest,
+        *,
+        actual_action_id: str | None = None,
+        recorded_at: datetime | None = None,
+    ) -> ActualActionResponse:
+        with self._lock:
+            self._get_record_unlocked(state_id)
+            action_id = actual_action_id or f"actual_{uuid.uuid4().hex}"
+            timestamp = (
+                utc_now()
+                if recorded_at is None
+                else ensure_utc_datetime(recorded_at, field_name="recorded_at")
+            )
+            action = ActualActionResponse(
+                actual_action_id=action_id,
+                state_id=state_id,
+                related_recommendation_id=request.related_recommendation_id,
+                action=request.action,
+                performed_at=request.performed_at,
+                amount_mm=request.amount_mm,
+                notes=request.notes,
+                recorded_at=timestamp,
+            )
+            actions = self._actual_actions.setdefault(state_id, [])
+            if any(existing.actual_action_id == action_id for existing in actions):
+                raise ValueError(f"Actual action '{action_id}' already exists.")
+            actions.append(action)
+            return action.model_copy(deep=True)
+
+    def list_actual_actions(
+        self,
+        state_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[ActualActionResponse]:
+        with self._lock:
+            self._get_record_unlocked(state_id)
+            bounded_limit = min(max(int(limit), 1), 200)
+            actions = sorted(
+                self._actual_actions.get(state_id, []),
+                key=lambda item: item.performed_at,
+            )
+            return [
+                action.model_copy(deep=True)
+                for action in actions[-bounded_limit:]
+            ]
+
     def clear(self) -> None:
         with self._lock:
             self._sessions.clear()
+            self._farms.clear()
+            self._plots.clear()
+            self._actual_actions.clear()
+            self._applied_irrigation_event_ids.clear()
+            self._disease_history.clear()
+            self._growth_history.clear()
+            self._water_history.clear()
 
     def count(self) -> int:
         with self._lock:

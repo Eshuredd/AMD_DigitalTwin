@@ -71,3 +71,7 @@ The same base URL can also be edited in the Streamlit sidebar.
 The disease inference request uses a longer timeout because model loading and first inference can be slower than ordinary API calls.
 
 Session creation fetches elevation automatically from Open-Meteo when the elevation override is disabled. The lookup uses the latitude and longitude entered in the form; the location name is stored as a label and is not geocoded.
+
+Water-state results now display observed time, CropTwin computation time, current root-zone deficit, unallocated excess water, and deficit beyond assumed total available water. The Streamlit workflow continues to submit date-only water observations unless extended by a caller, so the API marks those observations as `DATE_ONLY_UTC_START`.
+
+Farm and Plot management endpoints exist in the backend API, but this frontend remains focused on the existing session workflow.

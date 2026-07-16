@@ -49,6 +49,37 @@ def test_create_session_posts_payload() -> None:
     assert client.create_session(payload)["state_id"] == "state-1"
 
 
+def test_farm_plot_and_actual_action_client_routes() -> None:
+    seen: list[tuple[str, str, bytes]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, request.content))
+        if request.url.path in {"/farms", "/farms/farm-1/plots", "/sessions/state-1/actual-actions"}:
+            if request.method == "GET":
+                return httpx.Response(200, json=[])
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json={"ok": True})
+
+    client = _client(httpx.MockTransport(handler))
+
+    assert client.create_farm({"name": "A"}) == {"ok": True}
+    assert client.list_farms() == {"farms": []}
+    assert client.get_farm("farm-1") == {"ok": True}
+    assert client.create_plot("farm-1", {"name": "P"}) == {"ok": True}
+    assert client.list_plots("farm-1") == {"plots": []}
+    assert client.get_plot("plot-1") == {"ok": True}
+    assert client.create_crop_cycle_for_plot("plot-1", {"crop_type": "tomato"}) == {
+        "ok": True
+    }
+    assert client.record_actual_action("state-1", {"action": "IRRIGATE_NOW"}) == {
+        "ok": True
+    }
+    assert client.list_actual_actions("state-1") == {"actual_actions": []}
+
+    assert seen[0] == ("POST", "/farms", b'{"name":"A"}')
+    assert ("POST", "/plots/plot-1/crop-cycles", b'{"crop_type":"tomato"}') in seen
+
+
 def test_predict_disease_posts_versioned_body_and_uses_path_state_id() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"

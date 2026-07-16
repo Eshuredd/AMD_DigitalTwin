@@ -20,7 +20,7 @@ from app.schemas import (
 from app.simulation.simulator import (
     simulate_actions as simulate_actions_domain,
 )
-from app.state_store import InMemoryTwinStateStore
+from app.store_protocol import TwinStateStore
 
 
 router = APIRouter(tags=["simulation"])
@@ -37,7 +37,7 @@ INVALID_SIMULATION_REQUEST_CODE = "INVALID_SIMULATION_REQUEST"
 def simulate_actions_route(
     state_id: str,
     request: SimulateActionsRequest,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> SimulateActionsResponse:
     if not state_id.strip():
         raise TwinAPIException(

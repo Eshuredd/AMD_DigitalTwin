@@ -25,7 +25,7 @@ from app.schemas import (
     DiseasePredictionResponse,
     PredictDiseaseRequest,
 )
-from app.state_store import InMemoryTwinStateStore
+from app.store_protocol import TwinStateStore
 
 
 router = APIRouter(tags=["disease"])
@@ -111,7 +111,7 @@ def _raise_predictor_error(exc: Exception) -> None:
 def predict_disease(
     state_id: str,
     request: PredictDiseaseRequest,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
     predictor: DiseasePredictor = Depends(get_disease_predictor),
 ) -> DiseasePredictionResponse:
     _validate_request_contract(

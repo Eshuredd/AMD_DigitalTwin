@@ -17,6 +17,7 @@ from app.schemas import (
     GrowthStage,
     LastIrrigationEvent,
     MoistureState,
+    ObservationTimeBasis,
     SoilTexture,
     StressBand,
     WaterStateResponse,
@@ -30,6 +31,14 @@ from app.water.eto import compute_eto, day_of_year_from_date
 class SoilWaterParams:
     field_capacity: float
     wilting_point: float
+
+
+@dataclass(frozen=True)
+class RootZoneBalanceResult:
+    raw_root_zone_depletion_mm: float
+    root_zone_depletion_mm: float
+    water_surplus_mm: float
+    depletion_beyond_taw_mm: float
 
 
 DEFAULT_SOIL_WATER_PARAMS_BY_TEXTURE: dict[SoilTexture, SoilWaterParams] = {
@@ -266,7 +275,7 @@ def update_root_zone_depletion_mm(
     rainfall_mm: float,
     irrigation_mm: float,
     taw_mm: float,
-) -> float:
+) -> RootZoneBalanceResult:
     """Update root-zone depletion based on ETc, rainfall, and irrigation."""
     prev = (
         0.0
@@ -284,9 +293,20 @@ def update_root_zone_depletion_mm(
     )
     taw = _validate_finite_non_negative_number("taw_mm", taw_mm)
 
-    new_depletion = prev + etc - rain - irrigation
+    if prev > taw:
+        raise ValueError(
+            "previous_root_zone_depletion_mm must not be greater than taw_mm."
+        )
 
-    return min(max(new_depletion, 0.0), taw)
+    raw_depletion = prev + etc - rain - irrigation
+    root_zone_depletion = min(max(raw_depletion, 0.0), taw)
+
+    return RootZoneBalanceResult(
+        raw_root_zone_depletion_mm=raw_depletion,
+        root_zone_depletion_mm=root_zone_depletion,
+        water_surplus_mm=max(0.0, -raw_depletion),
+        depletion_beyond_taw_mm=max(0.0, raw_depletion - taw),
+    )
 
 
 def classify_moisture_state(
@@ -374,6 +394,14 @@ def extract_irrigation_amount_mm(
     return amount_mm
 
 
+def _ensure_utc_aware_datetime(name: str, value: datetime) -> datetime:
+    if not isinstance(value, datetime):
+        raise ValueError(f"{name} must be a datetime.")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware.")
+    return value.astimezone(timezone.utc)
+
+
 def compute_water_state(
     *,
     state_id: str,
@@ -387,6 +415,8 @@ def compute_water_state(
     last_irrigation_event: LastIrrigationEvent | None = None,
     previous_root_zone_depletion_mm: float | None = None,
     p_allowable: float = DEFAULT_P_ALLOWABLE,
+    observed_at: datetime | None = None,
+    observation_time_basis: ObservationTimeBasis | None = None,
     computed_at: datetime | None = None,
 ) -> WaterStateResponse:
     """Compute a WaterStateResponse from weather, growth stage, and soil assumptions."""
@@ -470,7 +500,7 @@ def compute_water_state(
         current_date,
     )
 
-    root_zone_depletion = update_root_zone_depletion_mm(
+    balance = update_root_zone_depletion_mm(
         previous_root_zone_depletion_mm=previous_root_zone_depletion_mm,
         etc_mm=etc,
         rainfall_mm=weather.rainfall_mm,
@@ -479,19 +509,40 @@ def compute_water_state(
     )
 
     estimated_moisture_state = classify_moisture_state(
-        root_zone_depletion_mm=root_zone_depletion,
+        root_zone_depletion_mm=balance.root_zone_depletion_mm,
         raw_threshold_mm=raw_threshold,
     )
     stress_band = classify_stress_band(
-        root_zone_depletion_mm=root_zone_depletion,
+        root_zone_depletion_mm=balance.root_zone_depletion_mm,
         raw_threshold_mm=raw_threshold,
     )
+
+    if observed_at is None:
+        observed_at_value = datetime.combine(
+            current_date,
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
+        observation_time_basis_value = ObservationTimeBasis.DATE_ONLY_UTC_START
+    else:
+        observed_at_value = _ensure_utc_aware_datetime("observed_at", observed_at)
+        observation_time_basis_value = (
+            observation_time_basis
+            if observation_time_basis is not None
+            else ObservationTimeBasis.EXPLICIT
+        )
+        if observed_at_value.date() != current_date:
+            raise ValueError(
+                "observed_at.date() must match current_date after UTC normalization."
+            )
+
+    if not isinstance(observation_time_basis_value, ObservationTimeBasis):
+        raise ValueError("observation_time_basis must be an ObservationTimeBasis.")
 
     computed_at_value = (
         computed_at if computed_at is not None else datetime.now(timezone.utc)
     )
-    if not isinstance(computed_at_value, datetime):
-        raise ValueError("computed_at must be a datetime.")
+    computed_at_value = _ensure_utc_aware_datetime("computed_at", computed_at_value)
 
     return WaterStateResponse(
         state_id=state_id,
@@ -510,8 +561,14 @@ def compute_water_state(
         taw=taw,
         p_allowable=p_allowable_value,
         raw_threshold=raw_threshold,
-        root_zone_depletion=root_zone_depletion,
+        raw_root_zone_depletion_mm=balance.raw_root_zone_depletion_mm,
+        root_zone_depletion_mm=balance.root_zone_depletion_mm,
+        root_zone_depletion=balance.root_zone_depletion_mm,
+        water_surplus_mm=balance.water_surplus_mm,
+        depletion_beyond_taw_mm=balance.depletion_beyond_taw_mm,
         estimated_moisture_state=estimated_moisture_state,
         stress_band=stress_band,
+        observed_at=observed_at_value,
         computed_at=computed_at_value,
+        observation_time_basis=observation_time_basis_value,
     )

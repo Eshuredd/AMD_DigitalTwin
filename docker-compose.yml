@@ -1,0 +1,29 @@
+services:
+  croptwin:
+    build: .
+    ports:
+      - "7860:7860"
+    environment:
+      CROPTWIN_API_BASE_URL: http://127.0.0.1:8000
+      CROPTWIN_DISEASE_ARTIFACT_DIR: /workspace/backend/model_artifacts/croptwin_disease
+      CROPTWIN_DATABASE_URL: sqlite+pysqlite:////workspace/data/croptwin.db
+      CROPTWIN_STATE_STORE: sqlalchemy
+      CROPTWIN_AUTO_CREATE_DB: "true"
+    volumes:
+      - croptwin_sqlite_data:/workspace/data
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: croptwin
+      POSTGRES_USER: croptwin
+      POSTGRES_PASSWORD: croptwin_dev_password
+    volumes:
+      - croptwin_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  croptwin_sqlite_data:
+  croptwin_postgres_data:

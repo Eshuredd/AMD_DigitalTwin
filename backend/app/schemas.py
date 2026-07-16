@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from enum import Enum
+import math
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CropType(str, Enum):
@@ -25,6 +26,21 @@ class SoilTexture(str, Enum):
     SILTY_LOAM = "silty_loam"
     CLAY_LOAM = "clay_loam"
     CLAY = "clay"
+
+
+class ObservationTimeBasis(str, Enum):
+    EXPLICIT = "EXPLICIT"
+    DATE_ONLY_UTC_START = "DATE_ONLY_UTC_START"
+    SERVER_RECEIVED = "SERVER_RECEIVED"
+
+
+class IrrigationEventSource(str, Enum):
+    MANUAL = "MANUAL"
+    CONVERTED_FROM_LITRES = "CONVERTED_FROM_LITRES"
+    CONVERTED_FROM_DRIP_RUNTIME = "CONVERTED_FROM_DRIP_RUNTIME"
+    CONTROLLER = "CONTROLLER"
+    SENSOR = "SENSOR"
+    LEGACY_REQUEST = "LEGACY_REQUEST"
 
 
 class ActionEnum(str, Enum):
@@ -76,12 +92,31 @@ class CautionReason(str, Enum):
 
 
 class Location(BaseModel):
-    name: str
+    name: Annotated[str, Field(min_length=1)]
     latitude: float
     longitude: float
     elevation_m: float | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("latitude", "longitude", "elevation_m")
+    @classmethod
+    def _finite_location_number(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("Location numeric fields must be finite numbers.")
+        if not math.isfinite(float(value)):
+            raise ValueError("Location numeric fields must be finite numbers.")
+        return float(value)
+
+    @model_validator(mode="after")
+    def _valid_coordinates(self) -> Location:
+        if self.latitude < -90.0 or self.latitude > 90.0:
+            raise ValueError("latitude must be between -90 and 90 inclusive.")
+        if self.longitude < -180.0 or self.longitude > 180.0:
+            raise ValueError("longitude must be between -180 and 180 inclusive.")
+        return self
 
 
 class StateIdRequest(BaseModel):
@@ -96,6 +131,25 @@ class HistoryEvent(BaseModel):
     predicted_label: str
     root_zone_depletion: float
     stress_band: StressBand
+
+
+def _ensure_utc_aware(value: datetime, field_name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware.")
+    return value.astimezone(timezone.utc)
+
+
+def _finite_non_negative_float(value: float | None, field_name: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a finite number.")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{field_name} must be a finite number.")
+    if result < 0.0:
+        raise ValueError(f"{field_name} must be >= 0.")
+    return result
 
 
 class HealthResponse(BaseModel):
@@ -152,6 +206,48 @@ class SystemInfoResponse(BaseModel):
     growth_stage_config: GrowthStageConfigInfo
     water_model_config: WaterModelConfigInfo
     narrator_policy: NarratorPolicyInfo
+
+
+class FarmCreateRequest(BaseModel):
+    name: Annotated[str, Field(min_length=1, max_length=200)]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class FarmResponse(BaseModel):
+    farm_id: str
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PlotCreateRequest(BaseModel):
+    name: Annotated[str, Field(min_length=1, max_length=200)]
+    location: Location
+    soil_texture: SoilTexture
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PlotResponse(BaseModel):
+    plot_id: str
+    farm_id: str
+    name: str
+    location: Location
+    soil_texture: SoilTexture
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CreateCropCycleRequest(BaseModel):
+    crop_type: CropType
+    planting_date: date
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class CreateSessionRequest(BaseModel):
@@ -267,10 +363,25 @@ class WeatherSnapshotResponse(BaseModel):
 
 
 class LastIrrigationEvent(BaseModel):
+    irrigation_event_id: str | None = None
     timestamp: datetime
     amount_mm: Annotated[float, Field(ge=0.0)]
+    source: IrrigationEventSource = IrrigationEventSource.LEGACY_REQUEST
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("timestamp")
+    @classmethod
+    def _timestamp_must_be_aware(cls, value: datetime) -> datetime:
+        return _ensure_utc_aware(value, "last_irrigation_event.timestamp")
+
+    @field_validator("amount_mm")
+    @classmethod
+    def _amount_must_be_finite(cls, value: float) -> float:
+        result = _finite_non_negative_float(value, "last_irrigation_event.amount_mm")
+        if result is None:
+            raise ValueError("last_irrigation_event.amount_mm is required.")
+        return result
 
 
 class ComputeWaterStateRequest(BaseModel):
@@ -278,8 +389,26 @@ class ComputeWaterStateRequest(BaseModel):
     current_date: date
     weather: WeatherInput
     last_irrigation_event: LastIrrigationEvent | None = None
+    observed_at: datetime | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("observed_at")
+    @classmethod
+    def _observed_at_must_be_aware(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return _ensure_utc_aware(value, "observed_at")
+
+    @model_validator(mode="after")
+    def _observed_at_matches_current_date(self) -> ComputeWaterStateRequest:
+        if self.observed_at is None:
+            return self
+        if self.observed_at.date() != self.current_date:
+            raise ValueError(
+                "observed_at.date() must match current_date after UTC normalization."
+            )
+        return self
 
 
 class WaterStateResponse(BaseModel):
@@ -299,10 +428,16 @@ class WaterStateResponse(BaseModel):
     taw: float
     p_allowable: Annotated[float, Field(ge=0.0, le=1.0)]
     raw_threshold: float
+    raw_root_zone_depletion_mm: float
+    root_zone_depletion_mm: float
     root_zone_depletion: float
+    water_surplus_mm: float
+    depletion_beyond_taw_mm: float
     estimated_moisture_state: MoistureState
     stress_band: StressBand
+    observed_at: datetime
     computed_at: datetime
+    observation_time_basis: ObservationTimeBasis
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -323,9 +458,15 @@ class WaterStateResponse(BaseModel):
                 "taw": 48.0,
                 "p_allowable": 0.5,
                 "raw_threshold": 24.0,
+                "raw_root_zone_depletion_mm": 18.0,
+                "root_zone_depletion_mm": 18.0,
                 "root_zone_depletion": 18.0,
+                "water_surplus_mm": 0.0,
+                "depletion_beyond_taw_mm": 0.0,
                 "estimated_moisture_state": "moderate_deficit",
                 "stress_band": "medium",
+                "observed_at": "2026-07-05T00:00:00Z",
+                "observation_time_basis": "DATE_ONLY_UTC_START",
                 "computed_at": "2026-07-05T10:00:00Z"
             }
         }
@@ -347,9 +488,16 @@ class TwinCurrentState(BaseModel):
     etc: float
     taw: float
     raw_threshold: float
+    raw_root_zone_depletion_mm: float
+    root_zone_depletion_mm: float
     root_zone_depletion: float
+    water_surplus_mm: float
+    depletion_beyond_taw_mm: float
     estimated_moisture_state: MoistureState
     stress_band: StressBand
+    observed_at: datetime
+    computed_at: datetime
+    observation_time_basis: ObservationTimeBasis
     last_update_time: datetime
 
 
@@ -431,6 +579,39 @@ class RecommendationResponse(BaseModel):
             }
         }
     )
+
+
+class ActualActionCreateRequest(BaseModel):
+    action: ActionEnum
+    performed_at: datetime
+    amount_mm: Annotated[float | None, Field(ge=0.0)] = None
+    related_recommendation_id: str | None = None
+    notes: Annotated[str | None, Field(max_length=1000)] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("performed_at")
+    @classmethod
+    def _performed_at_must_be_aware(cls, value: datetime) -> datetime:
+        return _ensure_utc_aware(value, "performed_at")
+
+    @field_validator("amount_mm")
+    @classmethod
+    def _amount_must_be_finite(cls, value: float | None) -> float | None:
+        return _finite_non_negative_float(value, "amount_mm")
+
+
+class ActualActionResponse(BaseModel):
+    actual_action_id: str
+    state_id: str
+    related_recommendation_id: str | None
+    action: ActionEnum
+    performed_at: datetime
+    amount_mm: float | None
+    notes: str | None
+    recorded_at: datetime
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class NarrationResponse(BaseModel):

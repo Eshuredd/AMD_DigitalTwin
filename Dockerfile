@@ -6,6 +6,9 @@ ENV PIP_NO_CACHE_DIR=1
 
 ENV CROPTWIN_API_BASE_URL=http://127.0.0.1:8000
 ENV CROPTWIN_DISEASE_ARTIFACT_DIR=/workspace/backend/model_artifacts/croptwin_disease
+ENV CROPTWIN_DATABASE_URL=sqlite+pysqlite:////workspace/data/croptwin.db
+ENV CROPTWIN_STATE_STORE=sqlalchemy
+ENV CROPTWIN_AUTO_CREATE_DB=true
 
 WORKDIR /workspace
 
@@ -15,6 +18,8 @@ RUN apt-get update \
         libgomp1 \
         supervisor \
     && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /workspace/data
 
 COPY backend/requirements.txt /tmp/backend-requirements.txt
 COPY frontend/requirements.txt /tmp/frontend-requirements.txt

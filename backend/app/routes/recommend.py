@@ -18,7 +18,7 @@ from app.recommendation.engine import (
     recommend_action as build_recommendation_domain,
 )
 from app.schemas import RecommendationResponse
-from app.state_store import InMemoryTwinStateStore
+from app.store_protocol import TwinStateStore
 
 
 router = APIRouter(tags=["recommendation"])
@@ -33,7 +33,7 @@ INVALID_RECOMMENDATION_REQUEST_CODE = "INVALID_RECOMMENDATION_REQUEST"
 )
 def recommend_route(
     state_id: str,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> RecommendationResponse:
     if not state_id.strip():
         raise TwinAPIException(

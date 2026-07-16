@@ -1112,20 +1112,27 @@ def _render_water_summary(response: dict[str, Any] | None) -> None:
             help="Estimated tomato-crop water use: ETo multiplied by the crop coefficient.",
         )
         col_c.metric(
-            "Root-zone depletion",
+            "Current root-zone deficit",
             f"{response['root_zone_depletion']:.2f} mm",
-            help="Estimated water currently missing from the crop root zone.",
+            help="Estimated water missing from the root zone relative to field capacity.",
         )
         col_d, col_e, col_f = st.columns(3)
         col_d.metric(
-            "Readily available water threshold",
-            f"{response['raw_threshold']:.2f} mm",
-            help="RAW: The depletion threshold beyond which crop water stress may begin.",
+            "Unallocated excess water",
+            f"{response.get('water_surplus_mm', 0.0):.2f} mm",
+            help=(
+                "Water input beyond the amount required to refill the simplified "
+                "root-zone bucket. CropTwin does not yet divide this into runoff, "
+                "deep drainage, or temporary storage."
+            ),
         )
         col_e.metric(
-            "Total available water",
-            f"{response['taw']:.2f} mm",
-            help="TAW: The estimated total plant-available water in the root zone.",
+            "Deficit beyond available-water capacity",
+            f"{response.get('depletion_beyond_taw_mm', 0.0):.2f} mm",
+            help=(
+                "The calculated deficit beyond the assumed total plant-available "
+                "water. This indicates that the simplified bucket has reached its dry limit."
+            ),
         )
         col_f.markdown(
             _badge(
@@ -1140,6 +1147,26 @@ def _render_water_summary(response: dict[str, Any] | None) -> None:
             ),
             unsafe_allow_html=True,
         )
+        col_g, col_h, col_i = st.columns(3)
+        col_g.metric(
+            "Readily available water threshold",
+            f"{response['raw_threshold']:.2f} mm",
+        )
+        col_h.metric(
+            "Observed for",
+            str(response.get("observed_at", "n/a")),
+            help="When the submitted physical or weather condition applies.",
+        )
+        col_i.metric(
+            "Computed by CropTwin at",
+            str(response.get("computed_at", "n/a")),
+            help="When CropTwin processed the observation.",
+        )
+        if response.get("observation_time_basis") == "DATE_ONLY_UTC_START":
+            st.caption(
+                "Exact observation time was not supplied; the API represented the "
+                "date-only observation as 00:00 UTC for compatibility."
+            )
         _show_response("Water response", response)
 
 
@@ -1161,7 +1188,7 @@ def _render_twin_state_card(client: CropTwinAPIClient) -> None:
             current = st.session_state.twin_response["current_state"]
             col_a, col_b, col_c = st.columns(3)
             col_a.metric("Growth stage", current["growth_stage"])
-            col_b.metric("Depletion", f"{current['root_zone_depletion']:.2f} mm")
+            col_b.metric("Current root-zone deficit", f"{current['root_zone_depletion']:.2f} mm")
             col_c.metric("History count", st.session_state.twin_response["state_history_count"])
             _show_response("Twin response", st.session_state.twin_response)
 
@@ -1188,6 +1215,12 @@ def _render_decision_tab(client: CropTwinAPIClient) -> None:
                 st.rerun()
 
         if st.session_state.simulation_response:
+            current = st.session_state.twin_response.get("current_state", {})
+            if current.get("water_surplus_mm", 0.0) > 0.0:
+                st.caption(
+                    "Excess input water was detected in the latest balance. Its "
+                    "division into runoff, drainage, and temporary storage is not modelled."
+                )
             _render_simulation_results(
                 st.session_state.simulation_response,
                 st.session_state.recommendation_response,

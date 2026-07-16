@@ -18,7 +18,7 @@ from app.narration.narrator import (
     generate_narration as build_narration_domain,
 )
 from app.schemas import NarrationResponse
-from app.state_store import InMemoryTwinStateStore
+from app.store_protocol import TwinStateStore
 
 
 router = APIRouter(tags=["narration"])
@@ -33,7 +33,7 @@ INVALID_NARRATION_REQUEST_CODE = "INVALID_NARRATION_REQUEST"
 )
 def narrate_route(
     state_id: str,
-    store: InMemoryTwinStateStore = Depends(get_state_store),
+    store: TwinStateStore = Depends(get_state_store),
 ) -> NarrationResponse:
     if not state_id.strip():
         raise TwinAPIException(
