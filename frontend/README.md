@@ -32,8 +32,7 @@ streamlit run frontend/app.py
 By default the frontend calls `http://127.0.0.1:8000`. Override it with:
 
 ```powershell
-$env:CROPTWIN_API_BASE_URL="http://127.0.0.1:8000"
-streamlit run frontend/app.py
+$env:CROPTWIN_API_BASE_URL = "http://127.0.0.1:8000"; streamlit run frontend/app.py
 ```
 
 The same base URL can also be edited in the Streamlit sidebar.

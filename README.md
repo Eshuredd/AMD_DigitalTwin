@@ -337,9 +337,77 @@ CROPTWIN_API_BASE_URL=http://127.0.0.1:8000
 
 Runtime environment variables supplied by Docker, Compose, Render, or the operating system override those Dockerfile defaults. Supervisor launches the internal FastAPI backend and the public Streamlit frontend in one container. FastAPI remains internal at `http://127.0.0.1:8000`; Streamlit binds to `0.0.0.0` and uses `${PORT:-7860}`.
 
-For local SQLite persistence, mount a volume at `/workspace/data` if you want data to survive container replacement. Render-style service filesystems may be temporary, so SQLite-on-container is suitable only for short demonstrations.
+### Local Docker Compose: SQLite
+
+The default Compose file starts only the CropTwin application and uses SQLite in the named `croptwin_sqlite_data` volume:
+
+```powershell
+docker compose up --build
+```
+
+The application is available at:
+
+```text
+http://127.0.0.1:7860
+```
+
+Stop the container while retaining the SQLite database volume:
+
+```powershell
+docker compose down
+```
+
+Stop the container and delete the SQLite database volume:
+
+```powershell
+docker compose down -v
+```
+
+`docker compose down -v` deletes the stored local `croptwin.db`. SQLite mode is suitable for local development and small demonstrations. PostgreSQL is preferred for durable multi-user deployments.
+
+### Local Docker Compose: PostgreSQL
+
+Use `docker-compose.postgres.yml` as an override when you want local PostgreSQL instead of SQLite. The password examples below are only for local development.
+
+PowerShell:
+
+```powershell
+$env:POSTGRES_PASSWORD = "choose-a-local-development-password"
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build
+```
+
+PowerShell one-line form:
+
+```powershell
+$env:POSTGRES_PASSWORD = "choose-a-local-development-password"; docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build
+```
+
+Bash/macOS/Linux:
+
+```bash
+export POSTGRES_PASSWORD="choose-a-local-development-password"
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build
+```
+
+PostgreSQL mode starts the `postgres` service first, waits for its health check, runs the one-shot `migrate` service with `alembic upgrade head`, and starts CropTwin only after migration succeeds. The override removes the inherited SQLite data mount, so PostgreSQL data is stored only in the `croptwin_postgres_data` named volume. Real deployment credentials belong in platform secret/environment settings, not in Git.
+
+Stop PostgreSQL mode while retaining volumes:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml down
+```
+
+Stop PostgreSQL mode and delete local PostgreSQL data:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml down -v
+```
+
+Warning: `down -v` deletes local PostgreSQL data.
 
 ### Render Mode A: Temporary SQLite Demonstration
+
+Render uses the Dockerfile and Supervisor configuration directly; `docker-compose.postgres.yml` is for local Compose development and is not required by Render.
 
 - Service type: Web Service.
 - Runtime: Docker.
@@ -439,6 +507,8 @@ AMD_DigitalTwin/
     supervisord.conf
   .streamlit/
   docker-compose.yml
+  docker-compose.postgres.yml
+  .env.compose.example
   Dockerfile
   pyproject.toml
   README.md
@@ -546,23 +616,31 @@ Configuration precedence is: application defaults, Dockerfile non-secret default
 Run the complete test suite:
 
 ```powershell
-PYTHONPATH=backend python -m pytest -v backend/tests
+$env:PYTHONPATH = "backend"
+python -m pytest -v backend/tests
 ```
 
 Focused commands:
 
 ```powershell
-PYTHONPATH=backend python -m pytest -v backend/tests/test_disease_model.py
-PYTHONPATH=backend python -m pytest -v backend/tests/test_routes/test_disease.py
-PYTHONPATH=backend python -m pytest -v backend/tests/test_frontend_api_client.py
-PYTHONPATH=backend python -m pytest -v backend/tests/test_frontend_ui_helpers.py
+$env:PYTHONPATH = "backend"; python -m pytest -v backend/tests/test_disease_model.py
+$env:PYTHONPATH = "backend"; python -m pytest -v backend/tests/test_routes/test_disease.py
+$env:PYTHONPATH = "backend"; python -m pytest -v backend/tests/test_frontend_api_client.py
+$env:PYTHONPATH = "backend"; python -m pytest -v backend/tests/test_frontend_ui_helpers.py
+```
+
+Bash/macOS/Linux:
+
+```bash
+export PYTHONPATH=backend
+python -m pytest -v backend/tests
 ```
 
 Current local verification:
 
 | Command | Result |
 |---|---|
-| `PYTHONPATH=backend python3 -m pytest -v backend/tests` | `197 passed, 1 skipped in 0.72s` |
+| `PYTHONPATH=backend python3 -m pytest -v backend/tests` | `203 passed, 1 skipped in 0.78s` |
 
 The full suite includes API workflow tests, route tests, persistence store-contract tests, deployment configuration tests, disease artifact validation, image validation, uncertainty policy tests, ETo/Open-Meteo tests, water-balance tests, and frontend HTTP/helper tests. Some route tests use dependency overrides; the optional real artifact smoke test runs when the local runtime can execute it.
 

@@ -12,18 +12,5 @@ services:
     volumes:
       - croptwin_sqlite_data:/workspace/data
 
-  postgres:
-    image: postgres:16-alpine
-    profiles: ["postgres"]
-    environment:
-      POSTGRES_DB: croptwin
-      POSTGRES_USER: croptwin
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before using the postgres profile}
-    volumes:
-      - croptwin_postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-
 volumes:
   croptwin_sqlite_data:
-  croptwin_postgres_data:

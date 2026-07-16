@@ -17,6 +17,10 @@ SUPERVISOR_CONF = REPO_ROOT / "docker" / "supervisord.conf"
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 ALEMBIC_ENV = REPO_ROOT / "backend" / "alembic" / "env.py"
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+COMPOSE_POSTGRES_FILE = REPO_ROOT / "docker-compose.postgres.yml"
+README = REPO_ROOT / "README.md"
+FRONTEND_README = REPO_ROOT / "frontend" / "README.md"
+GITIGNORE = REPO_ROOT / ".gitignore"
 
 
 def _supervisor_config() -> configparser.ConfigParser:
@@ -142,7 +146,109 @@ def test_alembic_env_uses_runtime_database_url_setting() -> None:
 
 
 def test_committed_compose_file_does_not_contain_postgres_password_value() -> None:
+    committed_config = "\n".join(
+        [
+            COMPOSE_FILE.read_text(encoding="utf-8"),
+            COMPOSE_POSTGRES_FILE.read_text(encoding="utf-8"),
+        ]
+    )
+
+    assert "croptwin_dev_password" not in committed_config
+    assert "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:" in committed_config
+
+
+def test_base_compose_is_sqlite_only_by_default() -> None:
     compose = COMPOSE_FILE.read_text(encoding="utf-8")
 
-    assert "croptwin_dev_password" not in compose
-    assert "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:" in compose
+    assert "croptwin:" in compose
+    assert "postgres:" not in compose
+    assert "migrate:" not in compose
+    assert "CROPTWIN_DATABASE_URL: sqlite+pysqlite:////workspace/data/croptwin.db" in compose
+    assert "CROPTWIN_AUTO_CREATE_DB: \"true\"" in compose
+    assert "CROPTWIN_STATE_STORE: sqlalchemy" in compose
+    assert "- croptwin_sqlite_data:/workspace/data" in compose
+    assert '"7860:7860"' in compose
+
+
+def test_postgres_compose_override_sets_database_and_startup_order() -> None:
+    override = COMPOSE_POSTGRES_FILE.read_text(encoding="utf-8")
+
+    assert "postgres:" in override
+    assert "image: postgres:16-alpine" in override
+    assert "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:" in override
+    assert "pg_isready -U croptwin -d croptwin" in override
+    assert "migrate:" in override
+    assert "alembic upgrade head" in override
+    assert "postgresql+psycopg://croptwin:${POSTGRES_PASSWORD:" in override
+    assert "CROPTWIN_AUTO_CREATE_DB: \"false\"" in override
+    assert "postgres:\n        condition: service_healthy" in override
+    assert "migrate:\n        condition: service_completed_successfully" in override
+    assert "volumes: !reset []" in override
+    assert "croptwin_sqlite_data: !reset null" in override
+    assert "croptwin_postgres_data:/var/lib/postgresql/data" in override
+    assert "5432:5432" not in override
+
+
+def test_env_example_is_allowed_without_allowing_secret_env_files() -> None:
+    gitignore = GITIGNORE.read_text(encoding="utf-8")
+
+    assert ".env" in gitignore
+    assert ".env.*" in gitignore
+    assert "!.env.example" in gitignore
+    assert "!.env.compose.example" in gitignore
+
+
+def _powershell_blocks(markdown: str) -> list[str]:
+    blocks: list[str] = []
+    lines = markdown.splitlines()
+    in_block = False
+    current: list[str] = []
+    for line in lines:
+        if line.strip().startswith("```powershell"):
+            in_block = True
+            current = []
+            continue
+        if in_block and line.strip() == "```":
+            blocks.append("\n".join(current))
+            in_block = False
+            continue
+        if in_block:
+            current.append(line)
+    return blocks
+
+
+def test_powershell_docs_do_not_use_bash_environment_assignment() -> None:
+    for path in (README, FRONTEND_README):
+        for block in _powershell_blocks(path.read_text(encoding="utf-8")):
+            assert "PYTHONPATH=backend python" not in block
+            if "PYTHONPATH" in block:
+                assert "$env:PYTHONPATH" in block
+            if "CROPTWIN_API_BASE_URL" in block:
+                assert "$env:CROPTWIN_API_BASE_URL" in block
+
+
+def test_powershell_one_line_environment_commands_use_semicolon() -> None:
+    for path in (README, FRONTEND_README):
+        for block in _powershell_blocks(path.read_text(encoding="utf-8")):
+            for line in block.splitlines():
+                if "$env:" not in line:
+                    continue
+                has_inline_command = any(
+                    token in line
+                    for token in (
+                        " docker ",
+                        " python ",
+                        " streamlit ",
+                    )
+                )
+                if has_inline_command:
+                    assert ";" in line
+
+
+def test_frontend_readme_has_valid_api_base_url_override() -> None:
+    frontend_readme = FRONTEND_README.read_text(encoding="utf-8")
+
+    assert (
+        '$env:CROPTWIN_API_BASE_URL = "http://127.0.0.1:8000"; '
+        "streamlit run frontend/app.py"
+    ) in frontend_readme
