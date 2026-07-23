@@ -2,6 +2,8 @@
 
 **Tomato Irrigation and Disease Digital Twin**
 
+[![CropTwin CI](https://github.com/Eshuredd/Tomato_DigitalTwin/actions/workflows/ci.yml/badge.svg)](https://github.com/Eshuredd/Tomato_DigitalTwin/actions/workflows/ci.yml)
+
 Deterministic agronomy with AI-assisted disease evidence.
 
 CropTwin is a FastAPI-based tomato-crop digital twin for local or internal MVP demonstration. It combines deterministic crop-water reasoning with a locally stored MobileNetV3-Small tomato-leaf classifier. The classifier contributes disease evidence; the deterministic agronomy engine remains the authority for irrigation recommendations.
@@ -658,6 +660,14 @@ Configuration precedence is: application defaults, Dockerfile non-secret default
 
 ## Testing
 
+GitHub Actions workflow `.github/workflows/ci.yml` runs the CropTwin CI quality
+gate on pull requests, pushes to `main`, and manual dispatches. The gate uses
+Python 3.12, installs backend and frontend dependencies, runs `pip check`,
+compiles backend/frontend modules, runs the complete pytest suite, performs a
+temporary SQLite Alembic upgrade/downgrade round trip, verifies Alembic
+migrations and a narrow persistence smoke test against disposable PostgreSQL 16,
+and builds/starts the Docker image with Streamlit and backend health checks.
+
 Run the complete test suite:
 
 ```powershell
@@ -681,11 +691,83 @@ export PYTHONPATH=backend
 python -m pytest -v backend/tests
 ```
 
+Local dependency and import checks:
+
+```bash
+python -m pip install -r backend/requirements.txt -r frontend/requirements.txt
+python -m pip check
+python -m compileall backend/app backend/alembic/versions frontend
+PYTHONPATH=backend:. python - <<'PY'
+import app.main
+import frontend.api_client
+import frontend.ui_helpers
+print("Application imports succeeded.")
+PY
+```
+
+Local SQLite migration round trip:
+
+```bash
+tmp_db="$(mktemp /tmp/croptwin-sqlite-XXXXXX.db)"
+export CROPTWIN_DATABASE_URL="sqlite+pysqlite:///${tmp_db}"
+cd backend
+alembic upgrade head
+alembic current
+alembic downgrade base
+alembic upgrade head
+```
+
+Local PostgreSQL migration and smoke equivalent:
+
+```bash
+docker run --rm --detach --name croptwin-postgres-local \
+  --publish 55432:5432 \
+  --env POSTGRES_DB=croptwin_ci \
+  --env POSTGRES_USER=postgres \
+  --env POSTGRES_PASSWORD=postgres \
+  postgres:16
+export CROPTWIN_DATABASE_URL="postgresql+psycopg://postgres:postgres@127.0.0.1:55432/croptwin_ci"
+export CROPTWIN_TEST_POSTGRES_URL="$CROPTWIN_DATABASE_URL"
+export CROPTWIN_STATE_STORE=sqlalchemy
+export CROPTWIN_AUTO_CREATE_DB=false
+cd backend
+alembic upgrade head
+alembic current
+alembic downgrade base
+alembic upgrade head
+cd ..
+PYTHONPATH=backend python -m pytest -v backend/tests/integration/test_postgres_persistence.py
+docker rm -f croptwin-postgres-local
+```
+
+Local Docker smoke equivalent:
+
+```bash
+docker build -t croptwin-ci:local .
+docker run --rm --detach --name croptwin-ci-local \
+  --publish 7860:7860 \
+  --env CROPTWIN_STATE_STORE=sqlalchemy \
+  --env CROPTWIN_DATABASE_URL=sqlite+pysqlite:////workspace/data/croptwin-ci.db \
+  --env CROPTWIN_AUTO_CREATE_DB=true \
+  --env CROPTWIN_API_BASE_URL=http://127.0.0.1:8000 \
+  croptwin-ci:local
+curl --fail http://127.0.0.1:7860/_stcore/health
+docker exec croptwin-ci-local python - <<'PY'
+import json
+import urllib.request
+with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=10) as response:
+    payload = json.load(response)
+assert payload["status"] == "ok", payload
+print(payload)
+PY
+docker rm -f croptwin-ci-local
+```
+
 Current local verification:
 
 | Command | Result |
 |---|---|
-| `PYTHONPATH=backend python3 -m pytest -v backend/tests` | `219 passed, 1 skipped in 1.04s` |
+| `PYTHONPATH=backend python3 -m pytest -v backend/tests` | `251 passed, 2 skipped in 2.09s` |
 
 The full suite includes API workflow tests, route tests, persistence store-contract tests, deployment configuration tests, disease artifact validation, image validation, uncertainty policy tests, ETo/Open-Meteo tests, water-balance tests, and frontend HTTP/helper tests. Some route tests use dependency overrides; the optional real artifact smoke test runs when the local runtime can execute it.
 
@@ -713,7 +795,6 @@ The full suite includes API workflow tests, route tests, persistence store-contr
 - Out-of-distribution and non-tomato image rejection.
 - Model monitoring and recalibration workflow.
 - Structured logs and observability.
-- CI.
 - Production serving.
 - Mobile-friendly UI improvements.
 
